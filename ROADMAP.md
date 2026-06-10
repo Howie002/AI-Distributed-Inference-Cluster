@@ -35,6 +35,48 @@ Operational tasks layered on top of the running cluster. Not code features — h
 
 ## Active Issues / UX Gaps
 
+### 🔴 vLLM restart loop on Blackwell — CUDA 12.8 too old for SM 12.0 + watchdog masks the failure
+
+**Priority:** Critical — cluster cannot serve any NVFP4 model on RTX PRO 6000 Blackwell hardware
+**Reported:** 2026-06-05
+**Hardware:** Death Star (`10.2.35.20`) — 4× NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition (SM 12.0)
+**Software:** `node.sh setup` auto-installs `cuda-toolkit-12-8`; driver-side CUDA is 13.0
+
+**Symptom**
+Master sends `POST /instances/launch` to the child agent. vLLM serve process spawns, loads weights successfully (~17.5 GiB shards in ~8 s), enters NVFP4 MoE backend setup, then **dies silently** with no error written to its dynamic log. Watchdog from `5716ba1` detects the dead process and spawns a fresh one. New process truncates the log, repeats. **Four full generations of vLLM PIDs observed in ~15 minutes** with zero serving and no diagnostic trace preserved.
+
+**Why this is two bugs at once**
+1. **CUDA toolkit version mismatch (root cause)** — vLLM logs `Failed to get device capability: SM 12.x requires CUDA >= 12.9` twice during init, then falls back from `FLASHINFER_*` NVFP4 backends to `VLLM_CUTLASS`. The fallback kernels apparently crash silently when they hit the loaded weights or during cudagraph capture. The `node.sh setup` script's auto-install of `cuda-toolkit-12-8` is **wrong for any SM 12.x hardware**.
+2. **Watchdog hides the crash (secondary)** — the `2b7897b` "Launch failure surfacing" path catches launch-time failures via the `EARLY_FAIL_WAIT_S` babysitter, but doesn't catch a process that dies *after* the agent has reported launch success. The new watchdog (`5716ba1`) immediately respawns the dead process, which truncates the dynamic log — destroying the only forensic evidence of why it died.
+
+**What's missing**
+- `node.sh setup` does not detect GPU compute capability before picking the CUDA toolkit version
+- Watchdog has no rate-limiting / backoff on restart attempts (instant respawn = continuous log churn)
+- Dynamic logs are overwritten on each launch rather than rotated (`dynamic_<port>.log.1`, `.2`, etc.)
+- No "crash mode" — after N consecutive crash-loop iterations, watchdog should stop respawning and surface the failure to the master rather than thrash
+
+**Acceptance criteria**
+- [ ] `node.sh setup` reads the highest GPU compute capability from `nvidia-smi --query-gpu=compute_cap` and picks toolkit accordingly:
+  - SM ≤ 9.0 → `cuda-toolkit-12-8`
+  - SM 10.x → `cuda-toolkit-12-9`
+  - **SM 12.x (Blackwell) → `cuda-toolkit-13-0` or `cuda-toolkit-12-9` minimum**
+- [ ] Setup also re-checks an existing install; if installed toolkit is older than what the hardware requires, warn and offer to upgrade in place (not just skip)
+- [ ] Dynamic logs rotate, not truncate: keep last N attempts as `dynamic_<port>.log.<N>` for postmortem
+- [ ] Watchdog adds exponential backoff: 5 s → 30 s → 2 min → 5 min between restart attempts
+- [ ] Watchdog enters "crash-loop detected" state after 3 consecutive failures within 5 min — stops respawning, marks the instance failed at the master via `POST /instances/{port}/failed` (new endpoint), and includes the preserved log tail
+- [ ] `/diagnose` (from `ce12428`) surfaces "this model crashed-looped N times today" so operators can see the pattern in one place
+
+**Workaround until fix lands (Blackwell-specific)**
+- Manually upgrade toolkit: `sudo apt install cuda-toolkit-13-0` (matches the 13.0 driver)
+- If crash persists after upgrade: launch with `--enforce-eager` to skip cudagraph capture (slower but lets the model serve while the real fix is being investigated)
+- Until either workaround is verified, do NOT auto-launch NVFP4 models from the master on Blackwell nodes — manual launches only with full log capture (`./vllm serve ... 2>&1 | tee /tmp/vllm-manual.log`)
+
+**Cross-references**
+- Origin context: Death Star re-IP from `10.2.30.28` → `10.2.35.20` (2026-06-05); fresh `node.sh setup` ran the (wrong) `cuda-toolkit-12-8` install
+- Related: Phase 6 *Device-profile setup presets* — this is the same problem space, but for a CRITICAL bug rather than ergonomics. Solving the auto-detect for the toolkit version is a subset of the device-profile preset work.
+
+---
+
 ### 🔴 Model launch feedback is opaque — "Launching…" with no progress or failure signal
 
 **Priority:** High — blocks confident operation of the cluster

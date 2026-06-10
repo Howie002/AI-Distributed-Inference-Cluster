@@ -15,6 +15,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -884,6 +885,34 @@ def _parse_chunked_mm_required(tail_lines: list[str]) -> Optional[int]:
     return None
 
 
+@lru_cache(maxsize=1)
+def _force_eager_for_hardware() -> bool:
+    """Detect hardware that requires --enforce-eager as a workaround.
+
+    Blackwell GPUs (SM 12.x) crash silently during cudagraph capture when running
+    with CUDA toolkit < 12.9 — vLLM logs `Failed to get device capability: SM 12.x
+    requires CUDA >= 12.9` then falls back to CUTLASS NVFP4 kernels which crash
+    once weights are resident. Until the toolkit is upgraded (or the upstream
+    Blackwell kernel paths stabilise), force eager mode on any SM 12.x card.
+
+    Cached so we only shell out once per agent lifetime.
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        for line in result.stdout.strip().splitlines():
+            cap = line.strip()
+            if cap.startswith("12."):  # SM 12.x = Blackwell
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _build_vllm_cmd(req: "LaunchRequest", flags: dict) -> list[str]:
     """Build the vllm serve argv. Extracted so the chunked-MM retry path can
     rebuild it with an added --max-num-batched-tokens without duplicating logic."""
@@ -911,6 +940,11 @@ def _build_vllm_cmd(req: "LaunchRequest", flags: dict) -> list[str]:
         cmd += ["--max-num-seqs", str(flags["max_num_seqs"])]
     if flags.get("max_num_batched_tokens"):
         cmd += ["--max-num-batched-tokens", str(flags["max_num_batched_tokens"])]
+    # Honour explicit master-side request, then force on Blackwell as workaround.
+    # See ROADMAP §Active Issues "vLLM restart loop on Blackwell".
+    if flags.get("enforce_eager") or _force_eager_for_hardware():
+        if "--enforce-eager" not in cmd:
+            cmd += ["--enforce-eager"]
     return cmd
 
 
