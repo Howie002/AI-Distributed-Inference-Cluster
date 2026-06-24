@@ -1,5 +1,29 @@
 # AI Distributed Inference Cluster - Notes
 
+## 2026-06-24 (late) — Turning away from `gemma-4-31b`; node rename to Death Star
+
+**Decision: `gemma-4-31b` is not a production model on this cluster.** After today's repeated silent-exit failures during APIServer init (post the zombie sweep that freed ~40 GB of leaked RAM), we're stepping away from it as the default. **`gemma-4-26b-a4b-nvfp4`** is the canonical chat/completions model going forward — it's instruction-tuned, runs reliably on GPU Server 1, supports `/v1/chat/completions` natively, and produces equivalent-or-better structured output for the HyperFrames pipeline at lower latency.
+
+**Why retire 31b:**
+- Operationally fragile: required `--enforce-eager` (Blackwell SM 12.x CUDA gap), occasionally dropped off the cluster mid-session, took 2+ minutes to load 58 GB BF16 weights, and after today's zombie cleanup wouldn't relaunch at all (silent exit before EngineCore spawn, no traceback).
+- Base model — needed an explicit chat template Jinja just to be usable from `/v1/chat/completions`, and the responses are still less polished than the instruction-tuned 26B.
+- HyperFrames pipeline used 31b via `/v1/completions` with Gemma turn markers, but the 26B understands the same turn markers AND is chat-native. Net win: simpler, more reliable, faster.
+
+**What this changes:**
+- `HyperFrames Education Generator/pipeline/llm.py` and `start.sh` now default to `gemma-4-26b-a4b-nvfp4` (was `gemma-4-31b`). Override via `PIPELINE_LLM_MODEL` env var if you need to test something else.
+- Cluster recommendation: point dashboard testing tab + consumer code at the 26B by default.
+- `chat_template` flag support in the agent stays useful for future base models (any non-instruction-tuned model coming in via the model library), but is not in active use right now.
+
+**Node rename: `Deat Star` → `Death Star`.** Cosmetic spelling fix. Done via `PATCH /nodes/10.2.35.20` on master with `{"name":"Death Star","agent_port":5000}`. Master's `node_config.json` updated; dashboard now shows the correct name. No service interruption.
+
+**Restart-resilience on Death Star.** Confirmed the watchdog recovers cleanly:
+- Local agent was down at start of this turn (orphan from earlier zombie cleanup). Restarted via `bash ./agent/start_agent.sh`.
+- Within 45s the watchdog re-launched `nomic-embed-text-v1-5` from `intended_instances.json` (port 8022, GPU 2, healthy).
+- The 26B-A4B local copy is also intended but takes longer to relaunch (separate from the routed copy on GPU Server 1 — the local one has `register_with_proxy: false`).
+- **systemd auto-start NOT installed** on Death Star yet — needs `sudo bash node.sh install-systemd` from a terminal with a real TTY. Without it, the cluster does not auto-bring-up on machine reboot. Adding to the carry-over list.
+
+---
+
 ## 2026-06-24 — Master role correction, Death Star decommission, 31B + nomic-embed back on Deat Star
 
 Big day for cluster hygiene. Net effect: the proxy at `10.2.35.10:4000` now routes three models cleanly across the live nodes, the master role is no longer pretending to be compute-eligible, and the agent has the endpoints needed to manage cluster topology from the dashboard going forward.
