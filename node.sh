@@ -1021,6 +1021,10 @@ PY
     if ! do_self_check; then
         bail "Setup wrote config and installed services, but the self-check failed (see above). Address the failures and re-run './node.sh check' to retry."
     fi
+
+    # Mark a clean exit so the global trap doesn't print "exited unexpectedly"
+    # after a fully-successful setup + self-check.
+    _CLEAN_EXIT=true
 }
 
 # ── Add node ──────────────────────────────────────────────────────────────────
