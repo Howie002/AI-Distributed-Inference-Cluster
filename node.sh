@@ -68,6 +68,54 @@ _systemd_available() {
         systemctl list-units --type=service >/dev/null 2>&1
 }
 
+# Validate a string as either a dotted IPv4, a CIDR, or a DNS hostname.
+# Reject single-character noise like "y" or empty strings — the setup wizard
+# previously took "y" (intended as "yes, accept default") and saved it as the
+# literal IP, breaking every downstream service.
+_valid_ip_or_host() {
+    local s="$1"
+    [ -z "$s" ] && return 1
+    # IPv4 with optional /prefix
+    if [[ "$s" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ ]]; then
+        # Validate each octet is 0-255
+        local addr="${s%%/*}"
+        local IFS='.'
+        local octets=($addr)
+        local o
+        for o in "${octets[@]}"; do
+            [ "$o" -gt 255 ] 2>/dev/null && return 1
+        done
+        return 0
+    fi
+    # DNS hostname — must have at least one dot OR be "localhost"
+    if [ "$s" = "localhost" ] || \
+       [[ "$s" =~ ^[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$ ]]; then
+        return 0
+    fi
+    return 1
+}
+
+# Validate CIDR or a comma-separated list of CIDRs (the discovery_range field).
+_valid_cidr_list() {
+    local s="$1"
+    [ -z "$s" ] && return 1
+    local IFS=','
+    local parts=($s)
+    local p
+    for p in "${parts[@]}"; do
+        # trim spaces
+        p="${p# }"; p="${p% }"
+        [[ "$p" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] || return 1
+    done
+    return 0
+}
+
+# Validate a numeric port (1-65535).
+_valid_port() {
+    local s="$1"
+    [[ "$s" =~ ^[0-9]+$ ]] && [ "$s" -ge 1 ] && [ "$s" -le 65535 ]
+}
+
 _systemd_units_for_role() {
     case "$1" in
         master|both) echo "$SYSTEMD_UNIT_AGENT $SYSTEMD_UNIT_DASHBOARD $SYSTEMD_UNIT_LITELLM" ;;
@@ -503,15 +551,22 @@ do_setup() {
     # Env vars: VLLM_ROLE, VLLM_THIS_IP, VLLM_MASTER_IP, VLLM_AGENT_PORT
     local _noninteractive="${VLLM_NONINTERACTIVE:-}"
 
+    # Capture existing config so we can use its values as defaults when the
+    # user is re-running setup. Without this, a reconfigure of a "child" node
+    # silently defaults the role prompt to "both" — which has bitten us
+    # (Death Star 2026-06-24).
+    local existing_role=""
+    if [ -f "$CONFIG_FILE" ]; then
+        existing_role=$(cfg_get "['role']" "")
+    fi
+
     if [ -z "$_noninteractive" ]; then
         echo -e "\n${BOLD}╔═══════════════════════════════════════╗${RESET}"
         echo -e "${BOLD}║   AI Distributed Inference Cluster     ║${RESET}"
         echo -e "${BOLD}╚═══════════════════════════════════════╝${RESET}\n"
 
         if [ -f "$CONFIG_FILE" ]; then
-            local existing_role
-            existing_role=$(cfg_get "['role']" "?")
-            warn "Existing config found (role: $existing_role)."
+            warn "Existing config found (role: ${existing_role:-?})."
             read -rp "Overwrite and reconfigure? [y/N]: " yn
             [[ "${yn,,}" == "y" ]] || { info "Keeping existing config."; _CLEAN_EXIT=true; exit 0; }
         fi
@@ -525,12 +580,26 @@ do_setup() {
         this_ip="$VLLM_THIS_IP"
         info "This IP: $this_ip"
     else
-        read -rp "This machine's IP [$detected_ip]: " this_ip
-        this_ip="${this_ip:-$detected_ip}"
+        while true; do
+            read -rp "This machine's IP [$detected_ip]: " this_ip
+            this_ip="${this_ip:-$detected_ip}"
+            if _valid_ip_or_host "$this_ip"; then
+                break
+            fi
+            warn "  '$this_ip' is not a valid IP or hostname. Press Enter to accept '$detected_ip', or type an explicit value."
+        done
     fi
 
     # ── Role ──────────────────────────────────────────────────────────────────
-    local role
+    # Default to the existing role when re-running setup on a configured node.
+    # Falls back to "both" only on first-run / unrecognised existing role.
+    local role role_default_num role_default_label
+    case "$existing_role" in
+        master) role_default_num=1; role_default_label="master (existing)" ;;
+        child)  role_default_num=2; role_default_label="child (existing)"  ;;
+        both)   role_default_num=3; role_default_label="both (existing)"   ;;
+        *)      role_default_num=3; role_default_label="both"              ;;
+    esac
     if [ -n "$_noninteractive" ] && [ -n "${VLLM_ROLE:-}" ]; then
         role="$VLLM_ROLE"
         info "Role: $role"
@@ -540,13 +609,14 @@ do_setup() {
         echo "    1) master  — dashboard only (no local GPU inference)"
         echo "    2) child   — GPU inference node (no dashboard)"
         echo "    3) both    — dashboard + GPU inference on this machine"
-        read -rp "  Role [1/2/3, default 3]: " role_num
-        case "${role_num:-3}" in
+        read -rp "  Role [1/2/3, default $role_default_num — $role_default_label]: " role_num
+        case "${role_num:-$role_default_num}" in
             1) role="master" ;;
             2) role="child"  ;;
             3) role="both"   ;;
-            *) role="both"   ;;
+            *) role="$existing_role" ;;
         esac
+        [ -z "$role" ] && role="both"
     fi
     success "Role: $role"
 
@@ -561,8 +631,23 @@ do_setup() {
         echo ""
         info "Master can be specified by IP (e.g. 10.2.35.10) OR hostname (e.g. ai-master.foundation.local)."
         info "Tip: leave blank to use auto-discovery — agent will scan the discovery range for the master."
-        read -rp "Master node IP/host [auto-discover]: " master_ip
-        master_ip="${master_ip:-auto}"
+        local existing_master_ip
+        existing_master_ip=$(cfg_get "['master']['ip']" "")
+        local master_prompt_default="auto-discover"
+        [ -n "$existing_master_ip" ] && [ "$existing_master_ip" != "auto" ] && master_prompt_default="$existing_master_ip"
+        while true; do
+            read -rp "Master node IP/host [$master_prompt_default]: " master_ip
+            master_ip="${master_ip:-$master_prompt_default}"
+            # "auto" / "auto-discover" are sentinel values, skip the validation.
+            if [ "$master_ip" = "auto" ] || [ "$master_ip" = "auto-discover" ]; then
+                master_ip="auto"
+                break
+            fi
+            if _valid_ip_or_host "$master_ip"; then
+                break
+            fi
+            warn "  '$master_ip' is not a valid IP or hostname. Try again, or type 'auto' for discovery."
+        done
     else
         master_ip="$this_ip"
     fi
@@ -573,8 +658,14 @@ do_setup() {
     if [ -n "$_noninteractive" ] && [ -n "${VLLM_AGENT_PORT:-}" ]; then
         agent_port="$VLLM_AGENT_PORT"
     else
-        read -rp "Agent port [5000]: " agent_port
-        agent_port="${agent_port:-5000}"
+        while true; do
+            read -rp "Agent port [5000]: " agent_port
+            agent_port="${agent_port:-5000}"
+            if _valid_port "$agent_port"; then
+                break
+            fi
+            warn "  '$agent_port' is not a valid port (1-65535)."
+        done
     fi
 
     # ── Cluster discovery (token + CIDR range) ────────────────────────────────
@@ -609,8 +700,16 @@ except Exception:
 " 2>/dev/null)
         echo ""
         info "Discovery range: CIDR(s) to scan for cluster nodes. Comma-separated for multiple."
-        read -rp "Discovery range [$default_range]: " discovery_range
-        discovery_range="${discovery_range:-$default_range}"
+        while true; do
+            read -rp "Discovery range [$default_range]: " discovery_range
+            discovery_range="${discovery_range:-$default_range}"
+            # Empty is OK — discovery is optional when master IP is hardcoded.
+            [ -z "$discovery_range" ] && break
+            if _valid_cidr_list "$discovery_range"; then
+                break
+            fi
+            warn "  '$discovery_range' is not a valid CIDR. Use form like 10.2.35.0/24 (not 10.2.35)."
+        done
     fi
 
     # ── Child nodes ───────────────────────────────────────────────────────────
