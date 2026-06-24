@@ -1,12 +1,14 @@
 #!/bin/bash
 # node.sh — AI Distributed Inference Cluster Node Manager
 # Usage:
-#   ./node.sh            — interactive menu (first run = full setup)
-#   ./node.sh start      — start services for this node's role
-#   ./node.sh stop       — stop all local services
-#   ./node.sh setup      — (re)configure + install
-#   ./node.sh add-node   — register a new child node
-#   ./node.sh status     — show what's running
+#   ./node.sh                  — interactive menu (first run = full setup)
+#   ./node.sh start            — start services for this node's role
+#   ./node.sh stop             — stop all local services
+#   ./node.sh setup            — (re)configure + install (auto-wires systemd unless VLLM_SKIP_SYSTEMD=1)
+#   ./node.sh add-node         — register a new child node
+#   ./node.sh status           — show what's running
+#   ./node.sh install-systemd  — install systemd units for auto-restart + boot bring-up
+#   ./node.sh remove-systemd   — remove systemd units (back to manual start/stop)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/node_config.json"
@@ -50,6 +52,177 @@ warn()    { echo -e "${YELLOW}⚠  $*${RESET}"; }
 bail()    { echo -e "${RED}✗ $*${RESET}"; echo "Log: $LOG_FILE"; read -rp "Press Enter to close... " _; _CLEAN_EXIT=true; exit 1; }
 header()  { echo -e "\n${BOLD}── $* ─────────────────────────────────────────${RESET}"; }
 
+# ── systemd integration ──────────────────────────────────────────────────────
+# Auto-restart on crash + automatic boot-time bring-up. Installed by `setup`
+# unless VLLM_SKIP_SYSTEMD=1. Three units, role-aware:
+#   vllm-cluster-agent.service       — agent (every role)
+#   vllm-cluster-dashboard.service   — dashboard (every role)
+#   vllm-cluster-litellm.service     — LiteLLM proxy (master + both only)
+SYSTEMD_DIR="/etc/systemd/system"
+SYSTEMD_UNIT_AGENT="vllm-cluster-agent.service"
+SYSTEMD_UNIT_DASHBOARD="vllm-cluster-dashboard.service"
+SYSTEMD_UNIT_LITELLM="vllm-cluster-litellm.service"
+
+_systemd_available() {
+    command -v systemctl >/dev/null 2>&1 && [ -d "$SYSTEMD_DIR" ] && \
+        systemctl list-units --type=service >/dev/null 2>&1
+}
+
+_systemd_units_for_role() {
+    case "$1" in
+        master|both) echo "$SYSTEMD_UNIT_AGENT $SYSTEMD_UNIT_DASHBOARD $SYSTEMD_UNIT_LITELLM" ;;
+        child)       echo "$SYSTEMD_UNIT_AGENT $SYSTEMD_UNIT_DASHBOARD" ;;
+        *)           echo "$SYSTEMD_UNIT_AGENT $SYSTEMD_UNIT_DASHBOARD" ;;
+    esac
+}
+
+# Returns 0 (true) if at least one of our unit files is installed.
+_systemd_is_managed() {
+    _systemd_available || return 1
+    [ -f "$SYSTEMD_DIR/$SYSTEMD_UNIT_AGENT" ] || \
+    [ -f "$SYSTEMD_DIR/$SYSTEMD_UNIT_DASHBOARD" ] || \
+    [ -f "$SYSTEMD_DIR/$SYSTEMD_UNIT_LITELLM" ]
+}
+
+# Write one unit file via sudo. Args: unit_name, description, exec_start_cmd,
+# exec_stop_cmd, pid_file_path, extra_env_lines (newline-separated)
+_write_systemd_unit() {
+    local unit_name="$1" desc="$2" exec_start="$3" exec_stop="$4" pid_file="$5" extra_env="$6"
+    local tmp
+    tmp=$(mktemp)
+    # Note: StartLimitIntervalSec/StartLimitBurst belong in [Unit] per systemd
+    # docs (they bound how often the unit as a whole can be restarted). Putting
+    # them in [Service] makes systemd ignore them silently — caught via
+    # `systemd-analyze verify` during local testing.
+    {
+        echo "[Unit]"
+        echo "Description=$desc"
+        echo "After=network-online.target"
+        echo "Wants=network-online.target"
+        echo "StartLimitIntervalSec=120"
+        echo "StartLimitBurst=3"
+        echo ""
+        echo "[Service]"
+        echo "Type=forking"
+        echo "User=$USER"
+        echo "WorkingDirectory=$SCRIPT_DIR"
+        [ -n "$extra_env" ] && echo "$extra_env"
+        echo "PIDFile=$pid_file"
+        echo "ExecStart=$exec_start"
+        echo "ExecStop=$exec_stop"
+        echo "Restart=on-failure"
+        echo "RestartSec=10"
+        echo "TimeoutStartSec=180"
+        echo ""
+        echo "[Install]"
+        echo "WantedBy=multi-user.target"
+    } > "$tmp"
+    sudo install -m 644 "$tmp" "$SYSTEMD_DIR/$unit_name" || { rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
+}
+
+do_install_systemd() {
+    [ ! -f "$CONFIG_FILE" ] && bail "No config found. Run './node.sh setup' first."
+
+    if ! _systemd_available; then
+        info "systemd not detected; skipping auto-restart wiring."
+        return 0
+    fi
+
+    local role agent_port
+    role=$(cfg_get "['role']" "both")
+    agent_port=$(cfg_get ".get('agent_port', 5000)" "5000")
+
+    header "Installing systemd units (role: $role)"
+    info "Requires sudo to write to $SYSTEMD_DIR/ — prompting now to cache credentials."
+
+    # Prime sudo up front so the rest of the function runs cleanly. Failing here
+    # means we abort BEFORE stopping any running services — leaving the cluster
+    # in its current state rather than mid-install limbo.
+    if ! sudo -v; then
+        bail "sudo authentication failed — aborting install. Cluster left untouched."
+    fi
+
+    # Stop any manually-started services first so systemd is the sole manager.
+    # Ignore failures — they may not be running.
+    [ -f "$SCRIPT_DIR/dashboard/stop_dashboard.sh" ] && bash "$SCRIPT_DIR/dashboard/stop_dashboard.sh" 2>/dev/null || true
+    [ -f "$SCRIPT_DIR/litellm/stop_proxy.sh" ]       && bash "$SCRIPT_DIR/litellm/stop_proxy.sh"       2>/dev/null || true
+    [ -f "$SCRIPT_DIR/agent/stop_agent.sh" ]         && bash "$SCRIPT_DIR/agent/stop_agent.sh"         2>/dev/null || true
+    sleep 1
+
+    _write_systemd_unit "$SYSTEMD_UNIT_AGENT" \
+        "vLLM Cluster Control Agent" \
+        "/bin/bash $SCRIPT_DIR/agent/start_agent.sh" \
+        "/bin/bash $SCRIPT_DIR/agent/stop_agent.sh" \
+        "$SCRIPT_DIR/agent/.agent_pid" \
+        "Environment=AGENT_PORT=$agent_port" \
+        || bail "Failed to write $SYSTEMD_UNIT_AGENT"
+    success "Wrote $SYSTEMD_UNIT_AGENT"
+
+    _write_systemd_unit "$SYSTEMD_UNIT_DASHBOARD" \
+        "vLLM Cluster Dashboard" \
+        "/bin/bash $SCRIPT_DIR/dashboard/start_dashboard.sh" \
+        "/bin/bash $SCRIPT_DIR/dashboard/stop_dashboard.sh" \
+        "$SCRIPT_DIR/dashboard/.dashboard_pid" \
+        "Environment=DASHBOARD_PORT=3005
+Environment=AGENT_URL=http://localhost:$agent_port" \
+        || bail "Failed to write $SYSTEMD_UNIT_DASHBOARD"
+    success "Wrote $SYSTEMD_UNIT_DASHBOARD"
+
+    if [ "$role" = "master" ] || [ "$role" = "both" ]; then
+        _write_systemd_unit "$SYSTEMD_UNIT_LITELLM" \
+            "vLLM Cluster LiteLLM Proxy" \
+            "/bin/bash $SCRIPT_DIR/litellm/start_proxy.sh" \
+            "/bin/bash $SCRIPT_DIR/litellm/stop_proxy.sh" \
+            "$SCRIPT_DIR/litellm/.proxy_pid" \
+            "Environment=LITELLM_PORT=4000" \
+            || bail "Failed to write $SYSTEMD_UNIT_LITELLM"
+        success "Wrote $SYSTEMD_UNIT_LITELLM"
+    elif [ -f "$SYSTEMD_DIR/$SYSTEMD_UNIT_LITELLM" ]; then
+        # Role downgraded from master → child; remove stale LiteLLM unit.
+        sudo systemctl disable --now "$SYSTEMD_UNIT_LITELLM" 2>/dev/null || true
+        sudo rm -f "$SYSTEMD_DIR/$SYSTEMD_UNIT_LITELLM"
+        info "Removed stale $SYSTEMD_UNIT_LITELLM (role no longer needs it)"
+    fi
+
+    sudo systemctl daemon-reload || bail "systemctl daemon-reload failed"
+    local units
+    units=$(_systemd_units_for_role "$role")
+    info "Enabling + starting: $units"
+    # shellcheck disable=SC2086
+    sudo systemctl enable --now $units || bail "systemctl enable --now failed — units written but not started"
+
+    success "systemd units installed — services will auto-restart on crash and on boot."
+    echo ""
+    info "Manage with: sudo systemctl status <unit-name>"
+    info "Live logs:   sudo journalctl -u <unit-name> -f"
+    info "Disable:     ./node.sh remove-systemd"
+}
+
+do_remove_systemd() {
+    if ! _systemd_available; then
+        info "systemd not detected; nothing to remove."
+        return 0
+    fi
+
+    header "Removing systemd units"
+    local removed=0
+    for unit in $SYSTEMD_UNIT_AGENT $SYSTEMD_UNIT_DASHBOARD $SYSTEMD_UNIT_LITELLM; do
+        if [ -f "$SYSTEMD_DIR/$unit" ]; then
+            sudo systemctl disable --now "$unit" 2>/dev/null || true
+            sudo rm -f "$SYSTEMD_DIR/$unit"
+            success "Removed $unit"
+            removed=$((removed + 1))
+        fi
+    done
+    if [ "$removed" -gt 0 ]; then
+        sudo systemctl daemon-reload
+        success "Services are stopped. Use './node.sh start' for manual management going forward."
+    else
+        info "No systemd units found to remove."
+    fi
+}
+
 # ── Python config helpers (env-var based — no shell quoting issues) ───────────
 
 cfg_get() {
@@ -77,19 +250,51 @@ write_config() {
     # All values passed as env vars — avoids quoting/injection issues.
     # cluster_proxy: where model registrations are POSTed. For master/both it's
     # this node's own :4000; for child it's master_ip:4000.
+    # cluster.token + cluster.discovery_range + cluster.master_host: new schema
+    # supporting auto-discovery and DNS-aware resolution. Backward compatible
+    # with the legacy `master.ip` field.
     python3 - "$CONFIG_FILE" <<'PY'
-import json, os, sys
+import json, os, sys, ipaddress, secrets
 role       = os.environ["CFG_ROLE"]
 this_ip    = os.environ["CFG_THIS_IP"]
 master_ip  = os.environ["CFG_MASTER_IP"]
 proxy_ip   = this_ip if role in ("master", "both") else master_ip
 proxy_port = int(os.environ.get("CFG_PROXY_PORT", "4000"))
+
+# Cluster discovery fields. Token auto-generated for master; child MUST be
+# given one (so it can authenticate to its master). Discovery range defaults
+# to the /24 derived from this_ip if not explicitly set.
+cluster_token = os.environ.get("CFG_CLUSTER_TOKEN", "").strip()
+if not cluster_token:
+    if role in ("master", "both"):
+        cluster_token = secrets.token_hex(16)
+    # child without explicit token → empty, agent will skip discovery and fall
+    # back to the legacy master.ip path
+
+discovery_range_env = os.environ.get("CFG_DISCOVERY_RANGE", "").strip()
+if discovery_range_env:
+    # comma-separated CIDR list
+    discovery_range = [r.strip() for r in discovery_range_env.split(",") if r.strip()]
+else:
+    try:
+        net = ipaddress.IPv4Network(f"{this_ip}/24", strict=False)
+        discovery_range = [str(net)]
+    except Exception:
+        discovery_range = []
+
+master_host = os.environ.get("CFG_MASTER_HOST", "").strip() or master_ip
+
 cfg = {
     "role":    role,
     "this_ip": this_ip,
     "master": {
         "ip":             master_ip,
         "agent_port":     int(os.environ.get("CFG_MASTER_AGENT_PORT", "5000")),
+    },
+    "cluster": {
+        "token":            cluster_token,
+        "master_host":      master_host,
+        "discovery_range":  discovery_range,
     },
     "cluster_proxy": {
         "ip":   proxy_ip,
@@ -309,17 +514,23 @@ do_setup() {
     fi
     success "Role: $role"
 
-    # ── Master IP ─────────────────────────────────────────────────────────────
-    local master_ip
+    # ── Master IP / hostname ──────────────────────────────────────────────────
+    # Now accepts hostnames as well as IPs. The agent re-resolves on each
+    # connection, so DNS changes propagate without touching node configs.
+    local master_ip master_host
     if [ -n "$_noninteractive" ] && [ -n "${VLLM_MASTER_IP:-}" ]; then
         master_ip="$VLLM_MASTER_IP"
-        info "Master IP: $master_ip"
+        info "Master IP/host: $master_ip"
     elif [ "$role" = "child" ]; then
-        read -rp "Master node IP: " master_ip
-        master_ip="${master_ip:-$this_ip}"
+        echo ""
+        info "Master can be specified by IP (e.g. 10.2.35.10) OR hostname (e.g. ai-master.foundation.local)."
+        info "Tip: leave blank to use auto-discovery — agent will scan the discovery range for the master."
+        read -rp "Master node IP/host [auto-discover]: " master_ip
+        master_ip="${master_ip:-auto}"
     else
         master_ip="$this_ip"
     fi
+    master_host="$master_ip"
 
     # ── Ports ─────────────────────────────────────────────────────────────────
     local agent_port
@@ -328,6 +539,42 @@ do_setup() {
     else
         read -rp "Agent port [5000]: " agent_port
         agent_port="${agent_port:-5000}"
+    fi
+
+    # ── Cluster discovery (token + CIDR range) ────────────────────────────────
+    # On master/both: token is auto-generated and displayed at end of setup so
+    # the operator can share it with children. On child: token must be provided
+    # (paste from master's setup output) or left blank to fall back to legacy
+    # hardcoded-IP behaviour.
+    local cluster_token discovery_range
+    if [ -n "$_noninteractive" ] && [ -n "${VLLM_CLUSTER_TOKEN:-}" ]; then
+        cluster_token="$VLLM_CLUSTER_TOKEN"
+    elif [ "$role" = "child" ]; then
+        echo ""
+        info "Cluster token: shared secret that lets this node authenticate to the master."
+        info "Get it from 'cluster.token' in the master's node_config.json (or master's setup output)."
+        read -rp "Cluster token [skip — fall back to hardcoded master IP]: " cluster_token
+        cluster_token="${cluster_token}"
+    else
+        cluster_token=""  # write_config will auto-generate one for master/both
+    fi
+
+    if [ -n "$_noninteractive" ] && [ -n "${VLLM_DISCOVERY_RANGE:-}" ]; then
+        discovery_range="$VLLM_DISCOVERY_RANGE"
+    else
+        # Suggest /24 derived from this_ip as the default.
+        local default_range
+        default_range=$(python3 -c "
+import ipaddress
+try:
+    print(str(ipaddress.IPv4Network('$this_ip/24', strict=False)))
+except Exception:
+    print('')
+" 2>/dev/null)
+        echo ""
+        info "Discovery range: CIDR(s) to scan for cluster nodes. Comma-separated for multiple."
+        read -rp "Discovery range [$default_range]: " discovery_range
+        discovery_range="${discovery_range:-$default_range}"
     fi
 
     # ── Child nodes ───────────────────────────────────────────────────────────
@@ -387,11 +634,32 @@ PY
     CFG_ROLE="$role" \
     CFG_THIS_IP="$this_ip" \
     CFG_MASTER_IP="$master_ip" \
+    CFG_MASTER_HOST="$master_host" \
     CFG_MASTER_AGENT_PORT="${VLLM_MASTER_AGENT_PORT:-5000}" \
     CFG_AGENT_PORT="$agent_port" \
     CFG_NODES="$nodes_json" \
+    CFG_CLUSTER_TOKEN="$cluster_token" \
+    CFG_DISCOVERY_RANGE="$discovery_range" \
     write_config || bail "Failed to write config file."
     success "Config saved."
+
+    # ── Surface the cluster token for master/both so operator can share ───────
+    if [ "$role" = "master" ] || [ "$role" = "both" ]; then
+        local saved_token
+        saved_token=$(cfg_get "['cluster']['token']" "")
+        if [ -n "$saved_token" ]; then
+            echo ""
+            info "──────────────────────────────────────────────────────────────────"
+            info "  CLUSTER TOKEN (share this with child nodes during their setup):"
+            echo ""
+            echo "    $saved_token"
+            echo ""
+            info "  Discovery range: $(cfg_get "['cluster']['discovery_range']" "[]")"
+            info "  Children scanning that range will discover this master via"
+            info "  GET /cluster/handshake (token-gated)."
+            info "──────────────────────────────────────────────────────────────────"
+        fi
+    fi
 
     # ── Install ───────────────────────────────────────────────────────────────
     echo ""
@@ -427,7 +695,19 @@ PY
     bash "$SCRIPT_DIR/litellm/stop_proxy.sh"       2>/dev/null || true
     bash "$SCRIPT_DIR/agent/stop_agent.sh"         2>/dev/null || true
     _CLEAN_EXIT=false
-    do_start
+
+    # ── Auto-install systemd units (opt-out: VLLM_SKIP_SYSTEMD=1) ─────────────
+    # Wires services to auto-restart on crash AND auto-start on host boot.
+    # do_install_systemd ends with `systemctl enable --now <units>`, so this
+    # also handles the post-setup "start everything" step on systemd hosts.
+    if [ -z "$VLLM_SKIP_SYSTEMD" ] && _systemd_available; then
+        do_install_systemd
+    else
+        if [ -n "$VLLM_SKIP_SYSTEMD" ]; then
+            warn "VLLM_SKIP_SYSTEMD set — skipping systemd auto-restart wiring (manual start only)."
+        fi
+        do_start
+    fi
 }
 
 # ── Add node ──────────────────────────────────────────────────────────────────
@@ -624,6 +904,29 @@ do_start() {
     this_ip=$(cfg_get ".get('this_ip', 'localhost')" "localhost")
     local dashboard_port="3005"
 
+    # Delegate to systemd if it's managing these services (installed by setup).
+    if _systemd_is_managed; then
+        header "Starting services (role: $role, systemd-managed)"
+        local units
+        units=$(_systemd_units_for_role "$role")
+        # shellcheck disable=SC2086
+        sudo systemctl start $units
+        sudo systemctl --no-pager status $units 2>&1 | grep -E "Active:|Loaded:|Main PID:" | head -20
+        echo ""
+        success "Start sequence complete (via systemctl)."
+        echo -e "  Dashboard  →  ${CYAN}http://$this_ip:$dashboard_port${RESET}"
+        echo -e "  Agent      →  ${CYAN}http://$this_ip:$agent_port${RESET}"
+        local proxy_ip proxy_port
+        proxy_ip=$(cfg_get "['cluster_proxy']['ip']" "$master_ip")
+        proxy_port=$(cfg_get "['cluster_proxy']['port']" "4000")
+        echo -e "  LiteLLM    →  ${CYAN}http://$proxy_ip:$proxy_port/v1${RESET}  (cluster entry point)"
+        echo ""
+        info "Live logs:  sudo journalctl -u <unit-name> -f"
+        read -rp "Press Enter to close..." _
+        _CLEAN_EXIT=true
+        return 0
+    fi
+
     header "Starting services (role: $role)"
 
     try_auto_pull
@@ -665,6 +968,25 @@ do_start() {
 
 # ── Stop ──────────────────────────────────────────────────────────────────────
 do_stop() {
+    # Delegate to systemd if it's managing these services.
+    if _systemd_is_managed; then
+        header "Stopping local services (systemd-managed)"
+        local role units
+        role=$(cfg_get "['role']" "both")
+        units=$(_systemd_units_for_role "$role")
+        # shellcheck disable=SC2086
+        sudo systemctl stop $units
+        # Also clean up any rogue vllm processes (the agent's watchdog won't
+        # restart them once the agent is stopped — but a manual `vllm serve`
+        # outside the agent path won't be tracked).
+        [ -f "$SCRIPT_DIR/stop_inference_stack.sh" ] && bash "$SCRIPT_DIR/stop_inference_stack.sh" || true
+        success "Done. (Services will NOT auto-restart until you 'start' or reboot.)"
+        info "To disable auto-restart on boot permanently: ./node.sh remove-systemd"
+        read -rp "Press Enter to close..." _
+        _CLEAN_EXIT=true
+        return 0
+    fi
+
     header "Stopping local services"
     [ -f "$SCRIPT_DIR/dashboard/stop_dashboard.sh" ]    && bash "$SCRIPT_DIR/dashboard/stop_dashboard.sh"    || true
     [ -f "$SCRIPT_DIR/litellm/stop_proxy.sh" ]          && bash "$SCRIPT_DIR/litellm/stop_proxy.sh"          || true
@@ -786,11 +1108,13 @@ show_menu() {
 # ── Entry point ───────────────────────────────────────────────────────────────
 CMD="${1:-menu}"
 case "$CMD" in
-    setup)    do_setup    ;;
-    start)    do_start    ;;
-    stop)     do_stop     ;;
-    add-node) do_add_node ;;
-    status)   do_status   ;;
-    logs)     do_logs     ;;
-    *)        show_menu   ;;
+    setup)            do_setup            ;;
+    start)            do_start            ;;
+    stop)             do_stop             ;;
+    add-node)         do_add_node         ;;
+    status)           do_status           ;;
+    logs)             do_logs             ;;
+    install-systemd)  do_install_systemd  ;;
+    remove-systemd)   do_remove_systemd   ;;
+    *)                show_menu           ;;
 esac

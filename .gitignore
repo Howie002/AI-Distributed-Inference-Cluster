@@ -3,6 +3,7 @@ logs/
 .stack_pids
 .setup_done
 node_config.json
+data/intended_instances.json
 
 # Python — venv lives at ~/.vllm-venv (outside repo), never committed
 __pycache__/

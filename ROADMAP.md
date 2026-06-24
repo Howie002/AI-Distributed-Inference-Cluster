@@ -35,6 +35,64 @@ Operational tasks layered on top of the running cluster. Not code features — h
 
 ## Active Issues / UX Gaps
 
+### 🟢 *(Shipped 2026-06-17)* Auto-discovery of cluster nodes + DNS-aware resolution
+
+**Status:** Resolved (agent + node.sh layers). Webapp wizard for setup/settings: agent endpoints shipped, dashboard UI deferred to next sprint.
+
+**Problem solved**
+- Every re-IP (DHCP renewal, subnet change like the recent Death Star `10.2.30.28` → `10.2.30.30` → `10.2.35.20` thrash) used to require manual edits to every node's `node_config.json`. Hardcoded master IPs made the cluster brittle.
+- No human-friendly node naming — the dashboard showed `10.2.35.28` instead of `Death Star`.
+
+**What landed**
+- **Cluster token + discovery range schema** in `node_config.json` under a new `cluster` key. Backward-compat: legacy `master.ip`-only configs still work; the new fields are optional.
+- **`GET /cluster/handshake`** endpoint — token-gated. Children call this against every IP in their discovery range; matching responses identify masters.
+- **`POST /cluster/register`** endpoint — token-gated. Children post their address to the master after discovery.
+- **`GET /cluster/nodes`** endpoint — read-only view of currently-registered children (hostname + IP + port + role + last-seen timestamp).
+- **Discovery thread** (`_discovery_loop`) on child/both roles. Scans up to 1024 IPs per pass with a 32-way thread pool. Fast path: re-verifies known master every 60 s; slow path: full scan when verify fails. Self-heals on re-IP.
+- **DNS-aware resolution** — `_resolve_to_ip()` / `_resolve_to_hostname()` helpers with 60 s TTL cache. `master.ip` field now accepts hostnames; agent re-resolves on each connection so DNS changes take effect without config edits. Hostnames surface in `/cluster/nodes` for the dashboard.
+- **`node.sh setup` prompts** added for cluster token (auto-generated on master, paste from master on child) and discovery range (defaults to /24 derived from `this_ip`). Token displayed at end of master setup so operator can share with children.
+- **Webapp setup wizard — agent side complete**: `GET /setup/state`, `POST /setup/complete`, `GET /settings`, `PUT /settings`. Dashboard UI (the actual wizard pages in Next.js) is the remaining work — these endpoints are ready to drive it.
+
+**Acceptance demonstrated**
+- New `cluster_token` auto-generates on master setup (16 random hex bytes via `secrets.token_hex(16)`).
+- Discovery range auto-derives from `this_ip` when operator presses Enter.
+- Existing nodes without cluster fields keep working via the legacy `master.ip` path (the discovery thread cleanly skips if no token is configured).
+- `_check_cluster_token` uses `secrets.compare_digest` so timing attacks aren't a concern.
+
+**Carry-over follow-ups**
+- **Dashboard UI for setup wizard + settings panel** — agent has the endpoints; just needs a Next.js page that hits them. Multi-step form, validation, hostname picker for master, copyable token output. Track as its own sprint.
+- **Master role: surface `/cluster/nodes` in the dashboard's main view** — replace any remaining hardcoded node-table data with a live read of registered children.
+- **Cluster-token rotation** — once a token is set, there's no rotation primitive yet. Add `POST /cluster/rotate-token` (master-only, requires current token) that returns the new value and invalidates old children.
+
+---
+
+### 🟢 *(Shipped 2026-06-10)* systemd auto-restart + boot-time bring-up
+
+**Status:** Resolved. `node.sh setup` now wires the cluster into systemd by default. Reboot → cluster comes back. Agent/dashboard/proxy crash → systemd restarts within 10 s.
+
+**What landed**
+- Three role-aware systemd units written by `node.sh setup`:
+  - `vllm-cluster-agent.service` (every role)
+  - `vllm-cluster-dashboard.service` (every role)
+  - `vllm-cluster-litellm.service` (master + both only)
+- `Type=forking`, `Restart=on-failure`, `RestartSec=10`, `StartLimitBurst=3` over 120 s — protects against crash-loop thrashing
+- `After=network-online.target` so DNS / agent-to-master discovery is ready before bring-up
+- `WantedBy=multi-user.target` so services come back on boot
+- `node.sh start/stop` detect systemd-managed mode and delegate to `systemctl` — no more dual-startup races
+- Opt-out via `VLLM_SKIP_SYSTEMD=1 ./node.sh setup` for containers / dev machines without systemd
+- New subcommands: `./node.sh install-systemd` (retrofit existing install), `./node.sh remove-systemd` (uninstall cleanly)
+
+**Operational impact**
+- Brand-new Death Star: `git clone … && ./node.sh setup` → answer role questions → one sudo prompt → cluster fully operational AND survives reboots / crashes. No second command.
+- Existing nodes: re-run `./node.sh setup` (idempotent) or `./node.sh install-systemd` to opt in.
+
+**Carry-over follow-ups** (not blocking, captured for future)
+- Move the auto-update `git pull` step (currently in `try_auto_pull` inside `do_start`) into a separate timer-driven systemd unit so the agent doesn't have to restart to pick up upstream changes
+- Surface systemd status in the dashboard (currently invisible — operators have to `systemctl status` from a shell)
+- `node.sh status` could also surface systemd state alongside the existing per-service curl checks
+
+---
+
 ### 🔴 vLLM restart loop on Blackwell — CUDA 12.8 too old for SM 12.0 + watchdog masks the failure
 
 **Priority:** Critical — cluster cannot serve any NVFP4 model on RTX PRO 6000 Blackwell hardware
