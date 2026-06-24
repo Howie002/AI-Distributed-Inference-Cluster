@@ -9,6 +9,10 @@
 #   ./node.sh status           — show what's running
 #   ./node.sh install-systemd  — install systemd units for auto-restart + boot bring-up
 #   ./node.sh remove-systemd   — remove systemd units (back to manual start/stop)
+#   ./node.sh check            — end-to-end self-check: config validity, agent
+#                                health, master reachability, cluster token,
+#                                proxy + dashboard. Run automatically at end
+#                                of `setup`; also available standalone.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/node_config.json"
@@ -49,6 +53,7 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 info()    { echo -e "${CYAN}▸ $*${RESET}"; }
 success() { echo -e "${GREEN}✓ $*${RESET}"; }
 warn()    { echo -e "${YELLOW}⚠  $*${RESET}"; }
+err()     { echo -e "${RED}✗ $*${RESET}" >&2; }
 bail()    { echo -e "${RED}✗ $*${RESET}"; echo "Log: $LOG_FILE"; read -rp "Press Enter to close... " _; _CLEAN_EXIT=true; exit 1; }
 header()  { echo -e "\n${BOLD}── $* ─────────────────────────────────────────${RESET}"; }
 
@@ -237,10 +242,34 @@ Environment=AGENT_URL=http://localhost:$agent_port" \
     local units
     units=$(_systemd_units_for_role "$role")
     info "Enabling + starting: $units"
+    # `enable --now` can return 0 even when start fails on some systemctl
+    # versions (enable succeeds; start fails but the failure is reported
+    # to stderr without flipping the exit code). Don't rely on the exit
+    # code alone — verify each unit is actually active afterwards.
     # shellcheck disable=SC2086
-    sudo systemctl enable --now $units || bail "systemctl enable --now failed — units written but not started"
+    sudo systemctl enable --now $units 2>&1 | grep -v "^Created symlink" || true
 
-    success "systemd units installed — services will auto-restart on crash and on boot."
+    # Give systemd a beat to finish bringing the units up, then verify.
+    sleep 2
+    local unit failed_units=""
+    for unit in $units; do
+        if sudo systemctl is-active --quiet "$unit"; then
+            success "  $unit  active"
+        else
+            failed_units="$failed_units $unit"
+            err "  $unit  NOT active"
+        fi
+    done
+
+    if [ -n "$failed_units" ]; then
+        err ""
+        err "systemd units written but not all started cleanly:$failed_units"
+        info "Inspect with: sudo journalctl -xeu${failed_units// / -xeu }"
+        info "Common causes: bad node_config.json (validate IP fields), port in use, missing venv."
+        bail "Aborting — fix the failing unit(s) before claiming setup complete."
+    fi
+
+    success "systemd units installed and active — services will auto-restart on crash and on boot."
     echo ""
     info "Manage with: sudo systemctl status <unit-name>"
     info "Live logs:   sudo journalctl -u <unit-name> -f"
@@ -281,6 +310,118 @@ _maybe_offer_systemd_install() {
             do_install_systemd || warn "systemd install failed; continuing with manual start."
             ;;
     esac
+}
+
+do_self_check() {
+    # End-to-end verification that this node's cluster role is actually
+    # working. Run automatically at the end of `node.sh setup` and available
+    # as a standalone subcommand. Returns 0 only when every applicable check
+    # passes. Each failure prints what to fix.
+    [ ! -f "$CONFIG_FILE" ] && bail "No config found. Run './node.sh setup' first."
+
+    local role agent_port this_ip master_ip cluster_token proxy_ip proxy_port
+    role=$(cfg_get "['role']" "?")
+    agent_port=$(cfg_get ".get('agent_port', 5000)" "5000")
+    this_ip=$(cfg_get ".get('this_ip', 'localhost')" "localhost")
+    master_ip=$(cfg_get "['master']['ip']" "")
+    cluster_token=$(cfg_get "['cluster'].get('token', '')" "")
+    proxy_ip=$(cfg_get "['cluster_proxy']['ip']" "$master_ip")
+    proxy_port=$(cfg_get "['cluster_proxy']['port']" "4000")
+
+    echo ""
+    header "Self-check (role: $role)"
+
+    local failures=0 passes=0
+    _check_pass()  { success "  $*"; passes=$((passes + 1)); }
+    _check_fail()  { err     "  $*"; failures=$((failures + 1)); }
+    _check_info()  { info    "  $*"; }
+
+    # ── Config sanity ─────────────────────────────────────────────────────────
+    if _valid_ip_or_host "$this_ip"; then
+        _check_pass "this_ip $this_ip is a valid address"
+    else
+        _check_fail "this_ip='$this_ip' is not a valid IP/hostname — re-run setup."
+    fi
+    if [ "$role" = "child" ] || [ "$role" = "both" ]; then
+        if [ -z "$master_ip" ] || [ "$master_ip" = "auto" ]; then
+            _check_info "master.ip is unset/'auto' — relying on cluster discovery"
+        elif _valid_ip_or_host "$master_ip"; then
+            _check_pass "master.ip $master_ip is a valid address"
+        else
+            _check_fail "master.ip='$master_ip' is not a valid IP/hostname — re-run setup."
+        fi
+    fi
+
+    # ── Local agent ───────────────────────────────────────────────────────────
+    if curl -sf --connect-timeout 3 --max-time 5 "http://localhost:$agent_port/health" >/dev/null 2>&1; then
+        _check_pass "local agent responding on :$agent_port"
+    else
+        _check_fail "local agent NOT responding on :$agent_port — check journalctl -xeu vllm-cluster-agent.service"
+    fi
+
+    # ── Child-side: master reachable + token works ───────────────────────────
+    if [ "$role" = "child" ] && [ -n "$master_ip" ] && [ "$master_ip" != "auto" ]; then
+        if curl -sf --connect-timeout 3 --max-time 5 "http://$master_ip:5000/health" >/dev/null 2>&1; then
+            _check_pass "master agent reachable at $master_ip:5000"
+        else
+            _check_fail "master agent NOT reachable at $master_ip:5000 — confirm master is up and firewall permits the LAN."
+        fi
+
+        if [ -n "$cluster_token" ]; then
+            local hs_status
+            hs_status=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 5 \
+                -H "X-Cluster-Token: $cluster_token" \
+                "http://$master_ip:5000/cluster/handshake" 2>/dev/null || echo "000")
+            if [ "$hs_status" = "200" ]; then
+                _check_pass "cluster token authenticates against master /cluster/handshake"
+            elif [ "$hs_status" = "401" ]; then
+                _check_fail "cluster token REJECTED by master (401) — token mismatch between this node and master."
+            else
+                _check_fail "cluster/handshake returned $hs_status — token check inconclusive."
+            fi
+        else
+            _check_info "no cluster.token set — auto-discovery disabled (fine if master.ip is hardcoded)"
+        fi
+    fi
+
+    # ── Master/both: LiteLLM proxy ────────────────────────────────────────────
+    if [ "$role" = "master" ] || [ "$role" = "both" ]; then
+        local local_proxy="http://localhost:$proxy_port"
+        if curl -sf --connect-timeout 3 --max-time 5 -H "Authorization: Bearer none" \
+            "$local_proxy/v1/models" >/dev/null 2>&1; then
+            _check_pass "LiteLLM proxy responding on :$proxy_port"
+            local routed
+            routed=$(curl -sf --max-time 5 -H "Authorization: Bearer none" "$local_proxy/v1/models" \
+                | python3 -c "import json,sys; print(' '.join(m['id'] for m in json.load(sys.stdin).get('data',[])))" 2>/dev/null || echo "")
+            if [ -n "$routed" ]; then
+                _check_info "routed models: $routed"
+            else
+                _check_info "proxy is up but no models registered yet (children may still be coming up)"
+            fi
+        else
+            _check_fail "LiteLLM proxy NOT responding on :$proxy_port — check journalctl -xeu vllm-cluster-litellm.service"
+        fi
+    fi
+
+    # ── Dashboard (master/both only) ──────────────────────────────────────────
+    if [ "$role" = "master" ] || [ "$role" = "both" ]; then
+        if curl -sf --connect-timeout 3 --max-time 5 "http://localhost:3005" >/dev/null 2>&1; then
+            _check_pass "dashboard responding on :3005"
+        else
+            _check_fail "dashboard NOT responding on :3005 — check journalctl -xeu vllm-cluster-dashboard.service"
+        fi
+    fi
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    echo ""
+    if [ "$failures" -eq 0 ]; then
+        success "Self-check: $passes/$((passes + failures)) checks passed. Cluster role '$role' is wired up correctly."
+        return 0
+    else
+        err "Self-check: $failures failure(s), $passes pass(es). Setup wrote config but the cluster is not yet healthy."
+        info "Fix the failing checks above (and inspect journalctl as suggested), then re-run: ./node.sh check"
+        return 1
+    fi
 }
 
 do_remove_systemd() {
@@ -835,6 +976,8 @@ PY
     # Wires services to auto-restart on crash AND auto-start on host boot.
     # do_install_systemd ends with `systemctl enable --now <units>`, so this
     # also handles the post-setup "start everything" step on systemd hosts.
+    # do_install_systemd BAILS now if any unit fails to come up — so reaching
+    # the self-check below means systemd reports everything active.
     if [ -z "$VLLM_SKIP_SYSTEMD" ] && _systemd_available; then
         do_install_systemd
     else
@@ -842,6 +985,17 @@ PY
             warn "VLLM_SKIP_SYSTEMD set — skipping systemd auto-restart wiring (manual start only)."
         fi
         do_start
+    fi
+
+    # ── Self-check: prove the cluster is actually working before claiming OK ──
+    # Setup is not "complete" if the agent/proxy/master-connection can't be
+    # verified — silently leaving a broken config is the failure mode we just
+    # bit ourselves on. If self-check fails, exit non-zero so callers (CI,
+    # operator scripts) see the failure.
+    echo ""
+    sleep 3   # give services a beat to finish initial registration
+    if ! do_self_check; then
+        bail "Setup wrote config and installed services, but the self-check failed (see above). Address the failures and re-run './node.sh check' to retry."
     fi
 }
 
@@ -1258,5 +1412,6 @@ case "$CMD" in
     logs)             do_logs             ;;
     install-systemd)  do_install_systemd  ;;
     remove-systemd)   do_remove_systemd   ;;
+    check|self-check) _CLEAN_EXIT=true; do_self_check ;;
     *)                show_menu           ;;
 esac
