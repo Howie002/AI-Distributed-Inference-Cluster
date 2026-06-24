@@ -199,6 +199,42 @@ Environment=AGENT_URL=http://localhost:$agent_port" \
     info "Disable:     ./node.sh remove-systemd"
 }
 
+_maybe_offer_systemd_install() {
+    # Conditions to skip: systemd unavailable, already managed, user opted out,
+    # or we don't have an interactive TTY for the sudo prompt.
+    [ -n "$VLLM_SKIP_SYSTEMD" ] && return 0
+    _systemd_available || return 0
+    _systemd_is_managed && return 0
+    if [ -n "$VLLM_NONINTERACTIVE" ] || [ ! -t 0 ]; then
+        warn "systemd is available but cluster units aren't installed."
+        warn "  Run 'sudo bash node.sh install-systemd' from a TTY to enable auto-restart + boot bring-up."
+        return 0
+    fi
+
+    echo ""
+    header "Auto-restart + boot bring-up not yet wired"
+    info "systemd is available on this host but cluster units aren't installed."
+    echo "  Installing them adds:"
+    echo "    • Auto-restart on crash (agent, dashboard, proxy)"
+    echo "    • Boot-time start — cluster comes back after a reboot without manual login"
+    echo ""
+    local ans
+    read -rp "Install systemd units now? Requires sudo. [Y/n] " ans
+    case "${ans,,}" in
+        n|no)
+            info "Skipped — install later with: sudo bash node.sh install-systemd"
+            info "  Set VLLM_SKIP_SYSTEMD=1 to suppress this prompt on subsequent starts."
+            return 0
+            ;;
+        *)
+            # If install fails (sudo denied, etc.), fall through to manual start
+            # rather than aborting — do_install_systemd uses `bail` only after
+            # its own state mutations would have started, and we haven't yet.
+            do_install_systemd || warn "systemd install failed; continuing with manual start."
+            ;;
+    esac
+}
+
 do_remove_systemd() {
     if ! _systemd_available; then
         info "systemd not detected; nothing to remove."
@@ -903,6 +939,13 @@ do_start() {
     master_ip=$(cfg_get "['master']['ip']" "localhost")
     this_ip=$(cfg_get ".get('this_ip', 'localhost')" "localhost")
     local dashboard_port="3005"
+
+    # Auto-offer systemd wiring on nodes that were set up before the systemd
+    # integration landed. setup() auto-installs on fresh setups; this catches
+    # the upgrade path. Honours VLLM_SKIP_SYSTEMD=1 (opt-out) and
+    # VLLM_NONINTERACTIVE=1 (skip prompt, manual start). do_install_systemd
+    # is idempotent if the user picks "yes" but units already exist.
+    _maybe_offer_systemd_install
 
     # Delegate to systemd if it's managing these services (installed by setup).
     if _systemd_is_managed; then
