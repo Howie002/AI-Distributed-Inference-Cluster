@@ -8,6 +8,7 @@ import concurrent.futures
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -63,6 +64,30 @@ CUDA_ENV = {
 }
 
 
+def _resolve_nvidia_smi() -> str:
+    # When the agent is launched from a minimal env (systemd, certain
+    # nohup setups), `nvidia-smi` may not be on PATH even though drivers
+    # are installed. Resolve once at import: try PATH, then the standard
+    # install locations. If none exist, fall back to the bare name — calls
+    # will raise FileNotFoundError, which our subprocess wrappers already
+    # catch and surface as warnings. Falling back keeps the agent usable
+    # on genuinely GPU-less coordinator nodes.
+    hit = shutil.which("nvidia-smi")
+    if hit:
+        return hit
+    for candidate in (
+        "/usr/bin/nvidia-smi",
+        "/usr/local/bin/nvidia-smi",
+        "/usr/local/nvidia/bin/nvidia-smi",
+        "/opt/nvidia/bin/nvidia-smi",
+    ):
+        if Path(candidate).exists():
+            return candidate
+    return "nvidia-smi"
+
+NVIDIA_SMI = _resolve_nvidia_smi()
+
+
 # ── Node config (read once at import; cheap to re-read if needed) ─────────────
 # `this_ip` is the externally-reachable IP the agent reports + uses when
 # registering model backends with the cluster proxy. `cluster_proxy` is where
@@ -90,6 +115,124 @@ def _cluster_proxy_url() -> str:
     return f"http://{ip}:{port}"
 
 CLUSTER_PROXY_URL = _cluster_proxy_url()
+
+# ── Cluster discovery + DNS helpers ──────────────────────────────────────────
+# Replaces brittle hardcoded master IPs. Each node config carries a
+# `cluster_token` (shared secret) and a `discovery_range` (list of CIDR ranges
+# to scan). Child nodes scan the range on startup, find any master responding
+# with a matching token via /cluster/handshake, and register themselves. The
+# discovery thread re-runs periodically so DHCP-driven IP changes self-heal.
+#
+# DNS layer: master_ip may be a hostname (e.g. "ai-master.foundation.local").
+# We resolve it on every connection so DNS updates take effect without
+# touching cluster configs.
+import socket
+import ipaddress
+import secrets
+
+CLUSTER_TOKEN: str = (
+    (_NODE_CFG.get("cluster") or {}).get("token")
+    or _NODE_CFG.get("cluster_token")
+    or ""
+)
+
+def _cluster_discovery_ranges() -> list[str]:
+    """Return the configured CIDR ranges, or derive a /24 from this_ip as fallback."""
+    cluster = _NODE_CFG.get("cluster") or {}
+    ranges = cluster.get("discovery_range") or _NODE_CFG.get("discovery_range")
+    if isinstance(ranges, str):
+        ranges = [ranges]
+    if ranges:
+        return [r for r in ranges if r]
+    # Fallback: derive /24 from this_ip if it's a real IP.
+    try:
+        if THIS_IP and THIS_IP != "localhost":
+            net = ipaddress.IPv4Network(f"{THIS_IP}/24", strict=False)
+            return [str(net)]
+    except Exception:
+        pass
+    return []
+
+DISCOVERY_RANGES: list[str] = _cluster_discovery_ranges()
+
+
+@lru_cache(maxsize=64)
+def _resolve_to_ip(host: str, ttl_bucket: int = 0) -> Optional[str]:
+    """Forward-resolve host (which may already be an IP). Cached briefly per
+    TTL bucket so we re-resolve roughly every minute without hammering DNS.
+    """
+    if not host:
+        return None
+    try:
+        # Already an IP? Return as-is.
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+    try:
+        return socket.gethostbyname(host)
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=64)
+def _resolve_to_hostname(ip: str) -> Optional[str]:
+    """Reverse-resolve an IP to its FQDN. Returns None on failure (treat the IP
+    itself as the display name in that case)."""
+    if not ip:
+        return None
+    try:
+        name, _, _ = socket.gethostbyaddr(ip)
+        return name
+    except Exception:
+        return None
+
+
+def _dns_ttl_bucket() -> int:
+    """Cache key for DNS lookups — flip every 60 seconds so changes propagate."""
+    return int(time.time() // 60)
+
+
+def _resolve_master_ip() -> Optional[str]:
+    """Resolve the master's IP, re-resolving DNS each minute. Honours
+    legacy `master.ip` (which may be a hostname OR an IP) AND new
+    `cluster.master_host` (always a hostname)."""
+    cluster = _NODE_CFG.get("cluster") or {}
+    host = cluster.get("master_host") or (_NODE_CFG.get("master") or {}).get("ip")
+    if not host:
+        return None
+    return _resolve_to_ip(host, ttl_bucket=_dns_ttl_bucket())
+
+
+def _check_cluster_token(token: Optional[str]) -> bool:
+    """Constant-time compare of inbound cluster token against ours.
+    If we have no token configured (legacy), reject all token-required ops."""
+    if not CLUSTER_TOKEN:
+        return False
+    if not token:
+        return False
+    return secrets.compare_digest(token, CLUSTER_TOKEN)
+
+
+def _iter_discovery_ips() -> "list[str]":
+    """Expand the configured CIDR ranges into a flat list of host IPs to scan.
+    Skips network + broadcast addresses. Hard-capped at 1024 IPs to prevent a
+    misconfigured /16 from blowing up the discovery thread."""
+    seen: set[str] = set()
+    ips: list[str] = []
+    for cidr in DISCOVERY_RANGES:
+        try:
+            net = ipaddress.IPv4Network(cidr, strict=False)
+        except Exception:
+            continue
+        for ip in net.hosts():
+            s = str(ip)
+            if s not in seen:
+                seen.add(s)
+                ips.append(s)
+                if len(ips) >= 1024:
+                    return ips
+    return ips
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
@@ -171,7 +314,7 @@ _HOT_CACHE = _TTLCache()
 
 def _nvidia_smi_query(fields: str) -> list[dict]:
     result = subprocess.run(
-        ["nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
+        [NVIDIA_SMI, f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
         capture_output=True, text=True, timeout=5
     )
     rows = []
@@ -186,7 +329,7 @@ def _gpu_uuid_to_idx() -> dict[str, int]:
     def _compute() -> dict[str, int]:
         try:
             out = subprocess.run(
-                ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
+                [NVIDIA_SMI, "--query-gpu=index,uuid", "--format=csv,noheader"],
                 capture_output=True, text=True, timeout=5,
             ).stdout
         except Exception:
@@ -209,7 +352,7 @@ def _compute_apps_snapshot() -> list[tuple[int, str, int]]:
     def _compute() -> list[tuple[int, str, int]]:
         try:
             out = subprocess.run(
-                ["nvidia-smi",
+                [NVIDIA_SMI,
                  "--query-compute-apps=pid,gpu_uuid,used_memory",
                  "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=5,
@@ -446,7 +589,7 @@ def _reclaim_vram_before_launch(target_gpu_indices: list[int]) -> dict:
         # VRAM baseline
         try:
             raw = subprocess.run(
-                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                [NVIDIA_SMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=5,
             ).stdout
             baseline_mb = sum(int(line.strip()) for line in raw.splitlines() if line.strip().isdigit())
@@ -491,7 +634,7 @@ def _reclaim_vram_before_launch(target_gpu_indices: list[int]) -> dict:
         if baseline_mb is not None:
             try:
                 raw = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                    [NVIDIA_SMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                     capture_output=True, text=True, timeout=5,
                 ).stdout
                 after_mb = sum(int(line.strip()) for line in raw.splitlines() if line.strip().isdigit())
@@ -735,6 +878,317 @@ def health():
     return {"status": "ok"}
 
 
+# ── Cluster discovery API ─────────────────────────────────────────────────────
+# Replaces hardcoded master IPs with token-gated subnet discovery + DNS-aware
+# resolution. See ROADMAP §Active Issues "Auto-discovery of nodes".
+
+# Tracks children that have registered with this node (master role only).
+_REGISTERED_CHILDREN: dict[str, dict] = {}
+_REGISTRY_LOCK = threading.Lock()
+
+
+class _ClusterRegistration(BaseModel):
+    """POST body for /cluster/register — child telling master "I exist, here's my address"."""
+    child_ip: str
+    child_hostname: Optional[str] = None
+    agent_port: int = 5000
+    role: str = "child"
+
+
+@app.get("/cluster/handshake")
+def cluster_handshake(x_cluster_token: Optional[str] = None):
+    """Called by a child during subnet scan to identify the master.
+
+    Returns the local node's identity if the token matches; 401 otherwise.
+    Children can scan a /24 and discover the master without knowing its IP
+    in advance. Token is passed via header `X-Cluster-Token` (FastAPI maps
+    `x_cluster_token` parameter to that header automatically).
+    """
+    if not _check_cluster_token(x_cluster_token):
+        raise HTTPException(status_code=401, detail="invalid or missing cluster token")
+    role = _NODE_CFG.get("role", "")
+    return {
+        "is_master": role in ("master", "both"),
+        "role": role,
+        "this_ip": THIS_IP,
+        "hostname": _resolve_to_hostname(THIS_IP) or socket.gethostname(),
+        "agent_port": _NODE_CFG.get("agent_port", 5000),
+    }
+
+
+@app.post("/cluster/register")
+def cluster_register(reg: _ClusterRegistration, x_cluster_token: Optional[str] = None):
+    """A child has discovered this master and is registering itself.
+    Master role only. Token-gated. Updates the in-memory registry; the
+    persisted node_config.json is left alone (registry is volatile state)."""
+    if not _check_cluster_token(x_cluster_token):
+        raise HTTPException(status_code=401, detail="invalid or missing cluster token")
+    role = _NODE_CFG.get("role", "")
+    if role not in ("master", "both"):
+        raise HTTPException(status_code=409, detail=f"this node is role={role}, not master")
+    hostname = reg.child_hostname or _resolve_to_hostname(reg.child_ip) or reg.child_ip
+    with _REGISTRY_LOCK:
+        _REGISTERED_CHILDREN[reg.child_ip] = {
+            "ip": reg.child_ip,
+            "hostname": hostname,
+            "agent_port": reg.agent_port,
+            "role": reg.role,
+            "registered_at": time.time(),
+            "last_seen_at": time.time(),
+        }
+    return {"accepted": True, "master_ip": THIS_IP, "master_hostname": _resolve_to_hostname(THIS_IP) or socket.gethostname()}
+
+
+@app.get("/cluster/nodes")
+def cluster_nodes():
+    """Master view: registered children with hostname + IP. Open (no token) —
+    purely informational, intended for dashboards. Children registering is the
+    token-gated path."""
+    role = _NODE_CFG.get("role", "")
+    if role not in ("master", "both"):
+        return {"nodes": [], "role": role, "note": "this node is not a master"}
+    with _REGISTRY_LOCK:
+        return {
+            "nodes": list(_REGISTERED_CHILDREN.values()),
+            "count": len(_REGISTERED_CHILDREN),
+            "role": role,
+            "this_ip": THIS_IP,
+            "this_hostname": _resolve_to_hostname(THIS_IP) or socket.gethostname(),
+        }
+
+
+def _try_handshake_one(ip: str, port: int, timeout: float = 1.0) -> Optional[dict]:
+    """Single-host handshake attempt. Returns master identity dict if this IP
+    is a matching master, None otherwise. Short timeout — discovery scans
+    many hosts in parallel and we don't want to wait on dead IPs."""
+    try:
+        req = urllib.request.Request(
+            f"http://{ip}:{port}/cluster/handshake",
+            headers={"X-Cluster-Token": CLUSTER_TOKEN},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return None
+            data = json.loads(resp.read().decode())
+            if data.get("is_master"):
+                return data
+    except Exception:
+        return None
+    return None
+
+
+def _try_register_with_master(master_ip: str, master_port: int, timeout: float = 3.0) -> bool:
+    """Child-side: tell the master we exist. Returns True on success."""
+    body = json.dumps({
+        "child_ip": THIS_IP,
+        "child_hostname": _resolve_to_hostname(THIS_IP) or socket.gethostname(),
+        "agent_port": _NODE_CFG.get("agent_port", 5000),
+        "role": _NODE_CFG.get("role", "child"),
+    }).encode()
+    try:
+        req = urllib.request.Request(
+            f"http://{master_ip}:{master_port}/cluster/register",
+            data=body,
+            headers={"Content-Type": "application/json", "X-Cluster-Token": CLUSTER_TOKEN},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+# Track the last-known master we discovered, so the discovery loop can short-
+# circuit by re-verifying it before doing a full subnet scan.
+_DISCOVERED_MASTER: dict = {"ip": None, "port": 5000, "last_verified_at": 0.0}
+_DISCOVERY_LOCK = threading.Lock()
+
+
+def _discover_master_via_scan() -> Optional[dict]:
+    """Scan the discovery range for a master. Runs handshakes in parallel,
+    bounded by a small worker pool to avoid thundering-herd against the LAN.
+    Returns the first match (and stops the scan there)."""
+    ips = _iter_discovery_ips()
+    if not ips:
+        return None
+    port = _NODE_CFG.get("agent_port", 5000)
+    # Use up to 32 concurrent handshakes — typical /24 scan finishes in <2s.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
+        futures = {pool.submit(_try_handshake_one, ip, port, 1.0): ip for ip in ips}
+        for fut in concurrent.futures.as_completed(futures, timeout=30):
+            try:
+                result = fut.result()
+            except Exception:
+                continue
+            if result:
+                # Got one — cancel the rest and return.
+                ip = futures[fut]
+                for f in futures:
+                    f.cancel()
+                return {"ip": ip, "port": port, **result}
+    return None
+
+
+def _verify_known_master() -> bool:
+    """Re-check the previously-discovered master is still reachable + a master.
+    Cheap (one HTTP call) — runs every discovery tick to catch silent re-IPs."""
+    with _DISCOVERY_LOCK:
+        ip = _DISCOVERED_MASTER.get("ip")
+        port = _DISCOVERED_MASTER.get("port", 5000)
+    if not ip:
+        return False
+    result = _try_handshake_one(ip, port, 2.0)
+    if result and result.get("is_master"):
+        with _DISCOVERY_LOCK:
+            _DISCOVERED_MASTER["last_verified_at"] = time.time()
+        return True
+    return False
+
+
+def _discovery_loop():
+    """Background thread: child role only. Finds master via subnet scan, then
+    re-verifies every 60s. If the verify fails (master moved / re-IP'd), runs
+    a fresh scan. Registers with the master once found."""
+    role = _NODE_CFG.get("role", "")
+    if role not in ("child", "both"):
+        return
+    if not CLUSTER_TOKEN:
+        # No token → can't authenticate. Skip silently; legacy behaviour wins.
+        return
+    if not DISCOVERY_RANGES:
+        return
+
+    # Brief startup delay so the network stack is fully up before scanning.
+    time.sleep(5)
+
+    while True:
+        try:
+            # Fast path: verify known master if we have one.
+            if _verify_known_master():
+                # Already discovered + reachable; just keep registration fresh.
+                with _DISCOVERY_LOCK:
+                    ip = _DISCOVERED_MASTER["ip"]
+                    port = _DISCOVERED_MASTER["port"]
+                _try_register_with_master(ip, port)
+                time.sleep(60)
+                continue
+
+            # Slow path: full scan.
+            result = _discover_master_via_scan()
+            if result:
+                with _DISCOVERY_LOCK:
+                    _DISCOVERED_MASTER["ip"] = result["ip"]
+                    _DISCOVERED_MASTER["port"] = result.get("port", 5000)
+                    _DISCOVERED_MASTER["last_verified_at"] = time.time()
+                # Register immediately so master knows about us.
+                _try_register_with_master(result["ip"], result.get("port", 5000))
+                time.sleep(60)
+            else:
+                # No master found yet — try again sooner.
+                time.sleep(15)
+        except Exception:
+            # Never let a bug here kill the thread.
+            time.sleep(30)
+
+
+# ── Agent-side setup wizard endpoints (UI lives in dashboard) ─────────────────
+
+@app.get("/setup/state")
+def setup_state():
+    """Tell the dashboard whether this node has been configured yet. If not,
+    the dashboard should route to its setup wizard rather than the main view."""
+    has_config = NODE_CONFIG_PATH.exists() and bool(_NODE_CFG.get("role"))
+    return {
+        "configured": has_config,
+        "this_ip": THIS_IP,
+        "detected_hostname": socket.gethostname(),
+        "current_config": _NODE_CFG if has_config else None,
+    }
+
+
+class _SetupPayload(BaseModel):
+    role: str  # "master" | "child" | "both"
+    this_ip: Optional[str] = None
+    master_host: Optional[str] = None   # hostname OR IP
+    master_agent_port: int = 5000
+    agent_port: int = 5000
+    cluster_token: Optional[str] = None  # auto-generate if None on master
+    discovery_range: Optional[list[str]] = None  # CIDR list; auto-derive from this_ip /24 if None
+    proxy_port: int = 4000
+
+
+@app.post("/setup/complete")
+def setup_complete(payload: _SetupPayload):
+    """Wizard submits the full config here; we write node_config.json and
+    advise the operator to restart the agent. We do NOT auto-restart — that's
+    the operator's call (and on systemd-managed hosts, `systemctl restart
+    vllm-cluster-agent` is the right action)."""
+    if payload.role not in ("master", "child", "both"):
+        raise HTTPException(status_code=400, detail=f"invalid role: {payload.role}")
+
+    this_ip = payload.this_ip or THIS_IP
+
+    # Token: required for cross-node ops. Master generates if missing; child
+    # MUST provide one (otherwise it can't authenticate to the master).
+    token = payload.cluster_token
+    if not token:
+        if payload.role == "child":
+            raise HTTPException(status_code=400, detail="child role requires cluster_token from master")
+        token = secrets.token_hex(16)
+
+    # Discovery range: default to /24 derived from this_ip.
+    discovery_range = payload.discovery_range
+    if not discovery_range:
+        try:
+            net = ipaddress.IPv4Network(f"{this_ip}/24", strict=False)
+            discovery_range = [str(net)]
+        except Exception:
+            discovery_range = []
+
+    master_host = payload.master_host or (this_ip if payload.role in ("master", "both") else "")
+    proxy_ip = this_ip if payload.role in ("master", "both") else (_resolve_to_ip(master_host, _dns_ttl_bucket()) or master_host)
+
+    new_cfg = {
+        "role": payload.role,
+        "this_ip": this_ip,
+        "master": {"ip": master_host, "agent_port": payload.master_agent_port},
+        "cluster": {
+            "token": token,
+            "master_host": master_host,
+            "discovery_range": discovery_range,
+        },
+        "cluster_proxy": {"ip": proxy_ip, "port": payload.proxy_port},
+        "agent_port": payload.agent_port,
+        "nodes": _NODE_CFG.get("nodes", []),
+        "update": _NODE_CFG.get("update", {
+            "repo_url": "https://github.com/Howie002/AI-Distributed-Inference-Cluster.git",
+            "branch": "main",
+            "auto_pull_on_start": True,
+        }),
+    }
+    NODE_CONFIG_PATH.write_text(json.dumps(new_cfg, indent=2))
+    return {
+        "saved": True,
+        "config_path": str(NODE_CONFIG_PATH),
+        "restart_required": True,
+        "restart_hint": "sudo systemctl restart vllm-cluster-agent  # if systemd-managed; else ./node.sh stop && ./node.sh start",
+    }
+
+
+@app.get("/settings")
+def settings_get():
+    """Return the current node configuration (the dashboard's Settings panel
+    reads this to populate forms)."""
+    return _NODE_CFG
+
+
+@app.put("/settings")
+def settings_put(payload: _SetupPayload):
+    """Update settings. Same shape as /setup/complete — different intent."""
+    return setup_complete(payload)
+
+
 def _parse_num(s: str) -> Optional[float]:
     s = s.strip().replace("[N/A]", "").replace("N/A", "").replace("Not Supported", "").strip()
     try:
@@ -899,7 +1353,7 @@ def _force_eager_for_hardware() -> bool:
     """
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+            [NVIDIA_SMI, "--query-gpu=compute_cap", "--format=csv,noheader"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0:
@@ -1219,7 +1673,7 @@ def diagnose():
     try:
         out = subprocess.check_output(
             [
-                "nvidia-smi",
+                NVIDIA_SMI,
                 "--query-compute-apps=pid,process_name,used_memory",
                 "--format=csv,noheader,nounits",
             ],
@@ -1927,10 +2381,30 @@ def agent_stop():
 
 @app.get("/nodes")
 def get_nodes():
-    """Return the full node list — used by child dashboards to show the whole cluster."""
+    """Return the full node list — used by child dashboards to show the whole cluster.
+
+    When this agent is role master/both, a synthetic 'self' entry is prepended
+    so the dashboard can target the master itself for instance launches. The
+    self entry is marked with `self: true` so the UI can disable edit/remove
+    affordances on it (you can't drop the master from the master's own config).
+    """
     try:
         config = json.loads(NODE_CONFIG_PATH.read_text())
-        return config.get("nodes", [])
+        nodes = list(config.get("nodes", []))
+        role = config.get("role", "")
+        if role in ("master", "both"):
+            self_ip = config.get("this_ip") or THIS_IP
+            self_port = config.get("agent_port", 5000)
+            # Don't duplicate if someone manually listed master in nodes[]
+            if not any(n.get("ip") == self_ip and n.get("agent_port") == self_port for n in nodes):
+                nodes.insert(0, {
+                    "name": config.get("name") or "Master",
+                    "ip": self_ip,
+                    "agent_port": self_port,
+                    "role": role,
+                    "self": True,
+                })
+        return nodes
     except Exception:
         return []
 
@@ -2012,6 +2486,110 @@ def rename_node(ip: str, req: RenameNodeRequest):
             "agent_port": n["agent_port"],
         }
     raise HTTPException(status_code=404, detail=f"Node {ip} not registered here")
+
+
+@app.delete("/nodes/{ip}")
+def remove_node(ip: str, agent_port: int | None = None):
+    """
+    Drop a node from this agent's node_config.json. Master/both only — child
+    agents have an empty nodes[] and will 404.
+
+    Side effects:
+      * The node's registered model backends are still in the proxy's
+        cluster_config.yaml until the next /proxy/sync. After this returns,
+        callers should hit /proxy/sync to drop any routes that pointed at
+        the removed node.
+      * The removed node is also unregistered from in-memory
+        _REGISTERED_CHILDREN so it doesn't reappear after the next
+        proxy_sync rebuild.
+      * Does NOT touch the remote node — if it's still up, it will not
+        try to re-register without a successful /cluster/register call,
+        which the master can refuse via the cluster_token gate.
+    """
+    if not NODE_CONFIG_PATH.exists():
+        raise HTTPException(status_code=500, detail="node_config.json not found")
+    try:
+        config = json.loads(NODE_CONFIG_PATH.read_text())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"node_config.json unreadable: {e}")
+
+    nodes = config.get("nodes") or []
+    before = len(nodes)
+
+    kept = []
+    removed = None
+    for n in nodes:
+        if n.get("ip") == ip and (agent_port is None or n.get("agent_port") == agent_port):
+            removed = n
+            continue
+        kept.append(n)
+
+    if removed is None:
+        raise HTTPException(status_code=404, detail=f"Node {ip} not registered here")
+
+    config["nodes"] = kept
+    NODE_CONFIG_PATH.write_text(json.dumps(config, indent=2))
+
+    # Drop from discovery registry too — otherwise a stale entry can be
+    # rebuilt by cluster_register the moment a node briefly comes back.
+    with _REGISTRY_LOCK:
+        _REGISTERED_CHILDREN.pop(ip, None)
+
+    return {
+        "removed": ip,
+        "name": removed.get("name"),
+        "agent_port": removed.get("agent_port"),
+        "remaining": len(kept),
+        "before": before,
+    }
+
+
+class SetRoleRequest(BaseModel):
+    role: str  # "master" | "child" | "both"
+    restart: bool = True
+
+
+@app.post("/role")
+def set_role(req: SetRoleRequest):
+    """Change this agent's role and (optionally) restart so it takes effect.
+
+    Roles:
+      master — runs the proxy + registry; cannot host vLLM instances itself.
+      both   — same as master, AND eligible to host vLLM instances locally.
+      child  — hosts instances; discovers + registers with the master.
+
+    Flipping master → both is how you turn a coordinator-only box into a
+    full compute node (assumes NVIDIA drivers + GPU present on this host).
+    """
+    if req.role not in ("master", "child", "both"):
+        raise HTTPException(status_code=400, detail="role must be one of: master, child, both")
+    if not NODE_CONFIG_PATH.exists():
+        raise HTTPException(status_code=500, detail="node_config.json not found")
+    try:
+        config = json.loads(NODE_CONFIG_PATH.read_text())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"node_config.json unreadable: {e}")
+
+    old_role = config.get("role", "")
+    if old_role == req.role:
+        return {"role": req.role, "old_role": old_role, "changed": False, "restarting": False}
+
+    config["role"] = req.role
+    NODE_CONFIG_PATH.write_text(json.dumps(config, indent=2))
+
+    if req.restart:
+        def _do():
+            time.sleep(0.5)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        threading.Thread(target=_do, daemon=True).start()
+
+    return {
+        "role": req.role,
+        "old_role": old_role,
+        "changed": True,
+        "restarting": req.restart,
+        "note": None if req.restart else "config updated; restart the agent for the new role to take effect",
+    }
 
 
 DASHBOARD_DIR = Path(__file__).parent.parent / "dashboard"
@@ -2503,6 +3081,11 @@ def _on_startup():
     # for "both" role is the only path that matters in practice.
     if _NODE_CFG.get("auto_restart_failed_instances", True):
         threading.Thread(target=_instance_watchdog_loop, daemon=True).start()
+    # Cluster discovery: child nodes scan the configured CIDR range for a
+    # master, then register. Master self-discovery is a no-op. Quietly skipped
+    # if there's no cluster token (legacy configs).
+    if _NODE_CFG.get("role", "") in ("child", "both") and CLUSTER_TOKEN and DISCOVERY_RANGES:
+        threading.Thread(target=_discovery_loop, daemon=True).start()
 
     # Start the per-node metrics sampler. Uses the currently registered node
     # name from node_config.json so JSONL rows are self-describing across

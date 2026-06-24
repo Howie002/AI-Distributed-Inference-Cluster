@@ -89,6 +89,12 @@ export interface NodeConfig {
   ip: string;
   agent_port: number;
   setup_cmd?: string;
+  // Synthetic entry the master agent prepends to its own /nodes response so
+  // the dashboard can show the master and target it for launches. The UI
+  // hides edit/remove affordances on this row — the master can't be edited
+  // or dropped from its own config via the dashboard.
+  self?: boolean;
+  role?: "master" | "child" | "both";
 }
 
 export interface ClusterNodeStatus {

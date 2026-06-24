@@ -180,3 +180,19 @@ export async function editNode(args: {
     throw new Error(detail || `edit → ${res.status}`);
   }
 }
+
+// Remove a registered node from the master's nodes[]. Same topology as
+// renameNode / editNode — Next.js routes the change to the master's
+// node_config.json. Does not contact the removed node itself; if it is still
+// alive, callers should bring it down separately.
+export async function removeNode(ip: string, agent_port: number): Promise<void> {
+  const res = await fetch("/api/nodes/remove", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ip, agent_port }),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(detail || `remove → ${res.status}`);
+  }
+}

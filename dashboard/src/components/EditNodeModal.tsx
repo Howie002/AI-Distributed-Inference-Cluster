@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { NodeConfig } from "@/lib/types";
-import { editNode } from "@/lib/api";
+import { editNode, removeNode } from "@/lib/api";
 
 interface Props {
   node: NodeConfig;
@@ -15,6 +15,8 @@ export function EditNodeModal({ node, onClose, onSaved }: Props) {
   const [ip, setIp]               = useState(node.ip);
   const [agentPort, setAgentPort] = useState(node.agent_port);
   const [saving, setSaving]       = useState(false);
+  const [removing, setRemoving]   = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const [testing, setTesting]     = useState(false);
   const [testResult, setTestResult] = useState<"ok" | "fail" | null>(null);
   const [error, setError]         = useState<string | null>(null);
@@ -23,6 +25,24 @@ export function EditNodeModal({ node, onClose, onSaved }: Props) {
     name.trim() !== node.name ||
     ip.trim()   !== node.ip   ||
     agentPort   !== node.agent_port;
+
+  // The master is exposed via /nodes with `self: true`. Removing it from its
+  // own config would orphan the host, so block the action at the UI level.
+  const isSelf = node.self === true;
+
+  async function handleRemove() {
+    setRemoving(true);
+    setError(null);
+    try {
+      await removeNode(node.ip, node.agent_port);
+      onSaved();
+      onClose();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRemoving(false);
+    }
+  }
 
   async function testConnection() {
     setTesting(true);
@@ -131,17 +151,51 @@ export function EditNodeModal({ node, onClose, onSaved }: Props) {
             <p className="text-xs text-red-400 bg-red-900/20 border border-red-800 rounded-lg px-3 py-2">{error}</p>
           )}
 
-          <div className="flex gap-3 justify-end pt-1">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-slate-300 hover:text-white transition-colors">
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={saving || !dirty}
-              className="px-4 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 transition-colors"
-            >
-              {saving ? "Saving…" : "Save changes"}
-            </button>
+          <div className="flex items-center justify-between pt-1">
+            <div>
+              {!isSelf && !confirmRemove && (
+                <button
+                  type="button"
+                  onClick={() => setConfirmRemove(true)}
+                  className="px-3 py-2 text-xs rounded-lg border border-red-900 text-red-300 hover:text-white hover:bg-red-900/40 transition-colors"
+                >
+                  Remove from cluster…
+                </button>
+              )}
+              {!isSelf && confirmRemove && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-red-300">Remove {node.name}?</span>
+                  <button
+                    type="button"
+                    onClick={handleRemove}
+                    disabled={removing}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-red-700 hover:bg-red-600 text-white disabled:opacity-50 transition-colors"
+                  >
+                    {removing ? "Removing…" : "Yes, remove"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmRemove(false)}
+                    disabled={removing}
+                    className="text-xs text-slate-400 hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="flex gap-3">
+              <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-slate-300 hover:text-white transition-colors">
+                Close
+              </button>
+              <button
+                type="submit"
+                disabled={saving || !dirty}
+                className="px-4 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 transition-colors"
+              >
+                {saving ? "Saving…" : "Save changes"}
+              </button>
+            </div>
           </div>
         </form>
       </div>
