@@ -1,11 +1,24 @@
 # AI Distributed Inference Cluster — Roadmap
 
 **Repo:** [github.com/Howie002/AI-Distributed-Inference-Cluster](https://github.com/Howie002/AI-Distributed-Inference-Cluster) (private, active on `dev`)
-**Last Synced:** 2026-05-13
+**Last Synced:** 2026-06-24
 **Current Phase:** v2 Cluster — operational hardening + analytics follow-on
 **Target Production:** Ongoing operational service
 
 Living document. Software feature work in "In Progress" and phased sections below. Deployment/ops-level tasks in the first section. Nothing is scheduled — items get picked up as capacity allows.
+
+---
+
+## Carry-overs from 2026-06-24
+
+- [ ] **Master pull one-time intervention** — master is N commits behind with persistent runtime writeback. The `force=true` option on `/update/pull` lives in the unpulled commits, so unblocking it needs one SSH session: `git stash push --include-untracked && git pull && curl -X POST http://localhost:5000/agent/restart`. After that, future updates run via `curl -X POST http://10.2.35.10:5000/update/pull?force=true` with no SSH required.
+- [ ] **Diagnose Deat Star vLLM zombie accumulation** — discovered 30+ stale `vllm serve` processes from past 4-7 days holding ~40 GB combined RSS, not tracked by the agent's `/instances` list. Watchdog should have caught these but didn't. Open question: under what conditions does a vLLM launch leak its PID past `_reclaim_vram_before_launch`'s scope? Pattern matters because it cost ~5x memory pressure today and broke 31B's reload.
+- [ ] **31B failing silent-exit during APIServer init on Deat Star** — after the zombie sweep, `google/gemma-4-31B` won't relaunch on GPU 3 (also tried GPU 0 by request). vLLM exits cleanly before spawning EngineCore subprocess, no error in log, just `resource_tracker: leaked semaphore` warnings. Earlier today's successful run was on the same hardware before the bulk SIGKILL. Theory: multiprocessing semaphore namespace disturbed by the kill sweep. Removed 31B from `intended_instances.json` so watchdog stops cycling. Investigation: try a Deat Star reboot to reset the multiprocessing namespace, OR add `--disable-frontend-multiprocessing` to the launch, OR investigate `/dev/shm` cleanup.
+- [ ] **Verify the new chat_template flag end-to-end** — agent now accepts `chat_template`, `enable_auto_tool_choice`, `tool_call_parser` in `extra_flags`. Canonical Gemma template lives at `agent/chat_templates/gemma.jinja`. Code change is correct (visible in argv) but couldn't verify a successful chat completion against 31B today because of the load failure above. Worth a quick test on a smaller base model.
+- [ ] **Default the dashboard testing tab to `gemma-4-26b-a4b-nvfp4` for chat** — it's chat-tuned and works natively. The testing tab errored when pointed at gemma-4-31b today (base model + no chat template). UI fix: detect base models in the model list and either disable chat-completions mode or auto-route to `/v1/completions`.
+- [ ] **LiteLLM `encoding_format` quirk on `/v1/embeddings`** — the proxy injects `encoding_format=None`, vLLM 400s. Today's workaround: consumers send `encoding_format: "float"` explicitly. Fix path: either set `drop_params: true` on the embedding model in `cluster_config.yaml`, or add a request transform. Land this so the README doesn't have to teach the quirk to every consumer.
+- [ ] **Document the proxy quirks in a single source consumers can find** — gemma-4-31b is a base model (use `/v1/completions` with Gemma turn markers), nomic-embed-text-v1-5 needs `encoding_format: "float"`, gemma-4-31b's max context is 32K and 26B's is 100K, embedding model max context is 2048 (not 8192 as commonly assumed). Right now this lives only in `docs/Notes.md` 2026-06-24 entry. Add a `docs/UsingTheProxy.md` to the repo so the next developer doesn't have to spelunk.
+- [ ] **Dashboard `dev` branch on GitHub is ahead of local** — someone (CI? webhook? earlier session?) pushed to `origin/dev` independently. Local push to `dev` rejected. Fetch + reconcile before next dev-branch work.
 
 ---
 

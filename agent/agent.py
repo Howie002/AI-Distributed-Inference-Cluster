@@ -1394,6 +1394,19 @@ def _build_vllm_cmd(req: "LaunchRequest", flags: dict) -> list[str]:
         cmd += ["--max-num-seqs", str(flags["max_num_seqs"])]
     if flags.get("max_num_batched_tokens"):
         cmd += ["--max-num-batched-tokens", str(flags["max_num_batched_tokens"])]
+    # chat_template: path to a Jinja file OR an inline template string. Needed
+    # for base models whose tokenizer has no built-in chat template — as of
+    # transformers v4.44 vLLM refuses to fabricate one, so /v1/chat/completions
+    # returns a BadRequest. Pre-shipped templates live under
+    # agent/chat_templates/ (e.g. "agent/chat_templates/gemma.jinja").
+    if flags.get("chat_template"):
+        cmd += ["--chat-template", str(flags["chat_template"])]
+    # Tool calling (enable_auto_tool_choice + tool_call_parser) — agentic
+    # clients require both. See CHANGELOG 2026-05-06.
+    if flags.get("enable_auto_tool_choice"):
+        cmd += ["--enable-auto-tool-choice"]
+    if flags.get("tool_call_parser"):
+        cmd += ["--tool-call-parser", str(flags["tool_call_parser"])]
     # Honour explicit master-side request, then force on Blackwell as workaround.
     # See ROADMAP §Active Issues "vLLM restart loop on Blackwell".
     if flags.get("enforce_eager") or _force_eager_for_hardware():
