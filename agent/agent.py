@@ -2823,16 +2823,29 @@ def _post_pull_restart(dashboard_changed: bool):
 
 
 @app.post("/update/pull")
-def update_pull():
-    """Run git pull --ff-only on the configured branch, then restart services."""
+def update_pull(force: bool = False):
+    """Run git pull --ff-only on the configured branch, then restart services.
+
+    ?force=true stashes local uncommitted changes (incl. untracked) before
+    pulling. Useful when the master has accumulated runtime writeback
+    (litellm/cluster_config.yaml, boot.meta.json, etc.) that the agent
+    regenerates on next sync anyway. The stash is dropped on success —
+    do not use force to preserve local edits.
+    """
     cfg = _load_update_config()
     branch = cfg["branch"]
 
-    # Refuse if there are uncommitted changes — a pull could clobber them.
     dirty = bool(_git("status", "--porcelain").stdout.strip())
+    stashed = False
     if dirty:
-        raise HTTPException(status_code=409,
-            detail="Local uncommitted changes present. Commit or stash them first.")
+        if not force:
+            raise HTTPException(status_code=409,
+                detail="Local uncommitted changes present. Commit or stash them first. Pass ?force=true to discard runtime writeback before pulling.")
+        stash = _git("stash", "push", "--include-untracked", "-m", "update-pull autosaved", timeout=20)
+        if stash.returncode != 0:
+            raise HTTPException(status_code=500,
+                detail=f"git stash failed: {stash.stderr.strip() or stash.stdout.strip()}")
+        stashed = True
 
     old_sha = _git("rev-parse", "HEAD").stdout.strip()
 
@@ -2850,13 +2863,21 @@ def update_pull():
     new_sha = _git("rev-parse", "HEAD").stdout.strip()
     if old_sha == new_sha:
         # Nothing pulled — refresh status and return.
+        if stashed:
+            _git("stash", "drop", timeout=10)
         threading.Thread(target=_refresh_update_status, daemon=True).start()
         return {"pulled": False, "restarting": False,
-                "detail": "Already up to date.", "sha": old_sha[:12]}
+                "detail": "Already up to date.", "sha": old_sha[:12],
+                "stashed_and_dropped": stashed}
 
     diff = _git("diff", "--name-only", f"{old_sha}..{new_sha}")
     changed = [f for f in diff.stdout.splitlines() if f]
     dashboard_changed = any(f.startswith("dashboard/") for f in changed)
+
+    # Drop the stash now — runtime configs will be rewritten by the agent
+    # on next sync anyway, so we don't try to reapply.
+    if stashed:
+        _git("stash", "drop", timeout=10)
 
     threading.Thread(
         target=_post_pull_restart,
@@ -2871,6 +2892,7 @@ def update_pull():
         "to": new_sha[:12],
         "changed": changed,
         "dashboard_rebuild": dashboard_changed,
+        "stashed_and_dropped": stashed,
     }
 
 
