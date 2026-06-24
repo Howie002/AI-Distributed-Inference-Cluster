@@ -2383,19 +2383,20 @@ def agent_stop():
 def get_nodes():
     """Return the full node list — used by child dashboards to show the whole cluster.
 
-    When this agent is role master/both, a synthetic 'self' entry is prepended
-    so the dashboard can target the master itself for instance launches. The
-    self entry is marked with `self: true` so the UI can disable edit/remove
-    affordances on it (you can't drop the master from the master's own config).
+    When this agent is role 'both' (orchestrator + compute), a synthetic 'self'
+    entry is prepended so the dashboard can target it for instance launches.
+    Pure 'master' role is intentionally excluded: orchestrator-only nodes can't
+    host instances, and showing them as deploy targets would silently produce
+    failed launches at CUDA init.
     """
     try:
         config = json.loads(NODE_CONFIG_PATH.read_text())
         nodes = list(config.get("nodes", []))
         role = config.get("role", "")
-        if role in ("master", "both"):
+        if role == "both":
             self_ip = config.get("this_ip") or THIS_IP
             self_port = config.get("agent_port", 5000)
-            # Don't duplicate if someone manually listed master in nodes[]
+            # Don't duplicate if someone manually listed self in nodes[]
             if not any(n.get("ip") == self_ip and n.get("agent_port") == self_port for n in nodes):
                 nodes.insert(0, {
                     "name": config.get("name") or "Master",
