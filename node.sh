@@ -158,9 +158,17 @@ _write_systemd_unit() {
         echo "[Service]"
         echo "Type=forking"
         echo "User=$USER"
+        # WorkingDirectory + PIDFile take a literal path — DO NOT quote.
+        # systemd's verifier rejects quoted values here ("path is not
+        # absolute"). Only ExecStart/ExecStop need quoting because those
+        # tokenize on whitespace.
         echo "WorkingDirectory=$SCRIPT_DIR"
         [ -n "$extra_env" ] && echo "$extra_env"
         echo "PIDFile=$pid_file"
+        # ExecStart/ExecStop tokenize on whitespace unless quoted.
+        # SCRIPT_DIR has spaces in our deployed path; the callers wrap the
+        # script reference in escaped double-quotes so the value coming in
+        # already looks like:  /bin/bash "/path/with spaces/script.sh"
         echo "ExecStart=$exec_start"
         echo "ExecStop=$exec_stop"
         echo "Restart=on-failure"
@@ -203,10 +211,15 @@ do_install_systemd() {
     [ -f "$SCRIPT_DIR/agent/stop_agent.sh" ]         && bash "$SCRIPT_DIR/agent/stop_agent.sh"         2>/dev/null || true
     sleep 1
 
+    # NB: $SCRIPT_DIR has spaces in our deployed path ("Github Projects/Vllm
+    # Start Point"). systemd splits ExecStart on whitespace unless the path
+    # is double-quoted, so we wrap every script reference. Without this,
+    # bash receives `bash /home/admin/Github` as argv[0..1] and dies trying
+    # to exec the first word.
     _write_systemd_unit "$SYSTEMD_UNIT_AGENT" \
         "vLLM Cluster Control Agent" \
-        "/bin/bash $SCRIPT_DIR/agent/start_agent.sh" \
-        "/bin/bash $SCRIPT_DIR/agent/stop_agent.sh" \
+        "/bin/bash \"$SCRIPT_DIR/agent/start_agent.sh\"" \
+        "/bin/bash \"$SCRIPT_DIR/agent/stop_agent.sh\"" \
         "$SCRIPT_DIR/agent/.agent_pid" \
         "Environment=AGENT_PORT=$agent_port" \
         || bail "Failed to write $SYSTEMD_UNIT_AGENT"
@@ -214,8 +227,8 @@ do_install_systemd() {
 
     _write_systemd_unit "$SYSTEMD_UNIT_DASHBOARD" \
         "vLLM Cluster Dashboard" \
-        "/bin/bash $SCRIPT_DIR/dashboard/start_dashboard.sh" \
-        "/bin/bash $SCRIPT_DIR/dashboard/stop_dashboard.sh" \
+        "/bin/bash \"$SCRIPT_DIR/dashboard/start_dashboard.sh\"" \
+        "/bin/bash \"$SCRIPT_DIR/dashboard/stop_dashboard.sh\"" \
         "$SCRIPT_DIR/dashboard/.dashboard_pid" \
         "Environment=DASHBOARD_PORT=3005
 Environment=AGENT_URL=http://localhost:$agent_port" \
@@ -225,8 +238,8 @@ Environment=AGENT_URL=http://localhost:$agent_port" \
     if [ "$role" = "master" ] || [ "$role" = "both" ]; then
         _write_systemd_unit "$SYSTEMD_UNIT_LITELLM" \
             "vLLM Cluster LiteLLM Proxy" \
-            "/bin/bash $SCRIPT_DIR/litellm/start_proxy.sh" \
-            "/bin/bash $SCRIPT_DIR/litellm/stop_proxy.sh" \
+            "/bin/bash \"$SCRIPT_DIR/litellm/start_proxy.sh\"" \
+            "/bin/bash \"$SCRIPT_DIR/litellm/stop_proxy.sh\"" \
             "$SCRIPT_DIR/litellm/.proxy_pid" \
             "Environment=LITELLM_PORT=4000" \
             || bail "Failed to write $SYSTEMD_UNIT_LITELLM"
@@ -264,8 +277,19 @@ Environment=AGENT_URL=http://localhost:$agent_port" \
     if [ -n "$failed_units" ]; then
         err ""
         err "systemd units written but not all started cleanly:$failed_units"
-        info "Inspect with: sudo journalctl -xeu${failed_units// / -xeu }"
-        info "Common causes: bad node_config.json (validate IP fields), port in use, missing venv."
+        # Build the journalctl helper without the substitution gotcha that
+        # previously produced "-xeu -xeu name1 -xeu name2".
+        local journal_cmd="sudo journalctl"
+        local u
+        for u in $failed_units; do
+            journal_cmd="$journal_cmd -xeu $u"
+        done
+        info "Inspect with: $journal_cmd"
+        info "Common causes:"
+        info "  • Bad node_config.json (validate IP fields)"
+        info "  • Path has spaces and old unit file is cached — re-run 'sudo systemctl daemon-reload'"
+        info "  • Port already in use by an older non-systemd process"
+        info "  • Missing venv (~/.vllm-venv) or missing node_modules"
         bail "Aborting — fix the failing unit(s) before claiming setup complete."
     fi
 
