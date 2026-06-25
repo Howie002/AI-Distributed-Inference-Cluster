@@ -1,0 +1,10 @@
+{
+  "key": "llm-proxy",
+  "name": "LLM Cluster Proxy (LiteLLM)",
+  "command": "PROXY_BIND_IP=10.2.35.10 bash litellm/start_proxy.sh",
+  "port": 4000,
+  "health": "http://10.2.35.10:4000/v1/models",
+  "depends_on": [],
+  "priority": 1,
+  "note": "Verify the Nano (:8020 precondition) first. Dependency for hr/rfi/deep-research/scholarships. Non-standard nested launcher; REQUIRES PROXY_BIND_IP. (The cluster dashboard :3005 / agent :5000 are separate optional services, not declared here.)"
+}
