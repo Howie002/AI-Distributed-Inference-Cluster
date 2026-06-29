@@ -472,6 +472,33 @@ def _proxy_write_and_restart(
                 f"      api_key: none"
             )
 
+        # Merge static model entries (audio services, etc.) not managed by the agent.
+        # Reads litellm/static_models.yaml; these entries survive every proxy rewrite.
+        # Env vars ($VAR) in api_base are expanded at write time, so a hardware swap
+        # is a one-line env change + proxy restart — no config edits needed.
+        _static_path = PROXY_CONFIG_PATH.parent / "static_models.yaml"
+        if _static_path.exists():
+            try:
+                import yaml as _yaml
+                _static = _yaml.safe_load(_static_path.read_text()) or {}
+                for _m in _static.get("model_list", []):
+                    _name = str(_m.get("model_name", "")).strip()
+                    _params = _m.get("litellm_params", {})
+                    _api_base = os.path.expandvars(str(_params.get("api_base", ""))).strip()
+                    if not _name or not _api_base:
+                        continue
+                    if "$" in _api_base:
+                        continue  # env var unexpanded → host not configured, skip silently
+                    entries.append(
+                        f"  - model_name: {_name}\n"
+                        f"    litellm_params:\n"
+                        f"      model: {_params.get('model', 'openai/' + _name)}\n"
+                        f"      api_base: {_api_base}\n"
+                        f"      api_key: {_params.get('api_key', 'none')}"
+                    )
+            except Exception:
+                pass  # malformed or missing yaml dep — skip, don't break proxy
+
         model_list = ("\n".join(entries)) if entries else "  []"
         # Only write a list block when there are entries
         if entries:

@@ -1,0 +1,26 @@
+# Static model entries — preserved across agent-generated cluster_config.yaml rewrites.
+#
+# The agent (agent/agent.py) merges these entries into cluster_config.yaml on every
+# proxy sync. Use this file for models the agent does not manage (audio TTS, STT
+# services, external endpoints) without touching agent code.
+#
+# Hardware swap (e.g. moving Higgs Audio to a new node):
+#   1. Update HIGGS_AUDIO_HOST in litellm/.env
+#   2. Restart LiteLLM:  bash litellm/stop_proxy.sh && bash litellm/start_proxy.sh
+#   Done — Foundation Coach and all other consumers are unchanged (they call the proxy).
+#
+# Env var syntax: $VAR_NAME or ${VAR_NAME} — expanded by Python's os.path.expandvars
+# when the agent writes the config. If the var is unset the entry is skipped silently.
+# Set vars in litellm/.env (sourced by start_proxy.sh) or in the agent's launch env.
+
+model_list:
+
+  # ── Higgs Audio TTS V3 ────────────────────────────────────────────────────────
+  # Deployed on the GPU node as a server on port 8881.
+  # Set HIGGS_AUDIO_HOST=http://<node-ip>:8881 in litellm/.env before starting.
+  # Install script: bash scripts/install_higgs_audio.sh
+  - model_name: higgs-audio-tts
+    litellm_params:
+      model: openai/higgs-audio-tts
+      api_base: $HIGGS_AUDIO_HOST
+      api_key: none

@@ -13,6 +13,14 @@ LOG_FILE="$LOG_DIR/litellm.log"
 CONFIG_FILE="$SCRIPT_DIR/cluster_config.yaml"
 PORT="${LITELLM_PORT:-4000}"
 
+# Load static-model env vars (e.g. HIGGS_AUDIO_HOST) from litellm/.env if present.
+# This is how you configure hardware-specific IPs without touching tracked files.
+# Example litellm/.env:  HIGGS_AUDIO_HOST=http://10.2.35.20:8881
+ENV_FILE="$SCRIPT_DIR/.env"
+if [ -f "$ENV_FILE" ]; then
+    set -a; source "$ENV_FILE"; set +a
+fi
+
 mkdir -p "$LOG_DIR"
 
 if [ -f "$PID_FILE" ]; then
