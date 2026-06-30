@@ -3047,8 +3047,12 @@ _INTENT_PATH = Path(__file__).parent.parent / "data" / "intended_instances.json"
 _INTENT_LOCK = threading.Lock()
 
 # Backoff schedule for restart attempts after the watchdog detects a missing
-# instance. After the last value, the instance is marked "abandoned" and the
-# watchdog stops trying until an operator manually re-launches or clears it.
+# instance. The schedule ramps up the interval; after the last value the
+# watchdog keeps retrying at that max interval indefinitely (it does NOT give
+# up). This way a transient failure — e.g. memory contention from a training
+# job during a reboot — self-heals on the next retry once resources free up,
+# with no operator action. A genuinely broken instance just costs one relaunch
+# attempt every _RESTART_BACKOFF_S[-1] seconds.
 _RESTART_BACKOFF_S = [30, 120, 600]
 
 # In-memory state about restart attempts: maps port → {"attempts": N,
@@ -3140,17 +3144,16 @@ def _instance_watchdog_tick() -> None:
         # Missing. Check backoff.
         with _RESTART_STATE_LOCK:
             state = _RESTART_STATE.setdefault(port, {"attempts": 0, "next_at": now, "abandoned": False})
-            if state["abandoned"] or now < state["next_at"]:
+            if now < state["next_at"]:
                 continue
             attempt = state["attempts"]
             state["attempts"] = attempt + 1
-            # Schedule the next retry now, in case this attempt also fails.
-            if attempt < len(_RESTART_BACKOFF_S):
-                state["next_at"] = now + _RESTART_BACKOFF_S[attempt]
-            else:
-                state["abandoned"] = True
-                # No further attempts — operator action needed.
-                continue
+            # Schedule the next retry, in case this attempt also fails. Ramp up
+            # through the backoff schedule, then keep retrying at the max interval
+            # indefinitely rather than abandoning — a transient resource problem
+            # should self-heal once it clears, with no operator action required.
+            idx = attempt if attempt < len(_RESTART_BACKOFF_S) else len(_RESTART_BACKOFF_S) - 1
+            state["next_at"] = now + _RESTART_BACKOFF_S[idx]
 
         # Attempt the relaunch. We call launch_instance() directly rather than
         # round-tripping through HTTP — it's the same process, same flags. The
