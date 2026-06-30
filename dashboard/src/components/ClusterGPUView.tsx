@@ -224,8 +224,12 @@ export function ClusterGPUView({ nodeStatuses, pendingLaunches = [] }: Props) {
                   {gpu.processes && gpu.processes.length > 0 ? (
                     <div className="space-y-1">
                       {gpu.processes.map((proc) => {
-                        const vllmInst = proc.label.startsWith("vllm")
-                          ? ns.status!.instances.find(i => i.gpu_index === gpu.index)
+                        // A process tied to a served model maps to its vLLM instance.
+                        // Match by model name first (a GPU can host several models),
+                        // then fall back to the GPU index.
+                        const vllmInst = proc.model
+                          ? (ns.status!.instances.find(i => i.served_name === proc.model || i.model_id === proc.model)
+                             ?? ns.status!.instances.find(i => i.gpu_index === gpu.index))
                           : undefined;
                         return (
                           <div key={proc.pid} className="flex items-center gap-1.5 text-xs bg-slate-800 rounded px-2 py-1" onClick={e => e.stopPropagation()}>

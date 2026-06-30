@@ -1,6 +1,9 @@
 export interface GPUProcess {
   pid: number;
   label: string;
+  /** Served model name when this PID belongs to a tracked vLLM server (incl. its
+   *  child workers like VLLM::EngineCore); null for non-model GPU processes. */
+  model: string | null;
   vram_used_mb: number;
 }
 

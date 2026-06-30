@@ -823,18 +823,65 @@ def _scan_vllm_instances() -> list[dict]:
     return instances
 
 
+def _vllm_pid_to_model() -> dict[int, str]:
+    """Map every PID owned by a vLLM server (the listening process AND all its
+    child workers) to that server's served model name.
+
+    GPU compute-app processes are usually child workers — e.g. ``VLLM::EngineCore``
+    — whose own process name says nothing about what they're serving. Resolving
+    each GPU PID through this map lets the dashboard label a process by the model
+    it's actually running (``gemma-4-26b-a4b-nvfp4``) instead of an opaque worker
+    name. Parsed from the cmdline only (no HTTP), so it's cheap enough for /gpus.
+    """
+    mapping: dict[int, str] = {}
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            cmdline = proc.info.get("cmdline") or []
+            # A vLLM server is `... vllm ... serve <model> ...`. Match on cmdline
+            # directly (not listening ports) — the serve process doesn't always
+            # expose its socket pid to net_connections, but it's always findable here.
+            if "serve" not in cmdline or not any("vllm" in a.lower() for a in cmdline):
+                continue
+            # Prefer the explicit --served-model-name; fall back to the `serve <model>`
+            # positional (basename only, so a HF path shows as the bare model id).
+            served = None
+            for i, arg in enumerate(cmdline):
+                if arg == "--served-model-name" and i + 1 < len(cmdline):
+                    served = cmdline[i + 1]
+                    break
+            if served is None:
+                for i, arg in enumerate(cmdline):
+                    if arg == "serve" and i + 1 < len(cmdline):
+                        served = cmdline[i + 1].rsplit("/", 1)[-1]
+                        break
+            if not served:
+                continue
+            pid = proc.info["pid"]
+            mapping[pid] = served
+            for child in psutil.Process(pid).children(recursive=True):
+                mapping[child.pid] = served
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return mapping
+
+
 def _get_gpu_processes() -> dict[int, list[dict]]:
     """Returns {gpu_index: [process_info, ...]} for every process using GPU VRAM."""
     uuid_to_idx = _gpu_uuid_to_idx()
+    pid_to_model = _vllm_pid_to_model()
     by_gpu: dict[int, list[dict]] = {}
     for pid, gpu_uuid, vram_mb in _compute_apps_snapshot():
         gpu_idx = uuid_to_idx.get(gpu_uuid)
         if gpu_idx is None:
             continue
-        label = _process_label(pid)
+        # Prefer the served model name when this PID belongs to a tracked vLLM
+        # server; otherwise fall back to the generic process-description heuristic.
+        model = pid_to_model.get(pid)
+        label = model if model else _process_label(pid)
         by_gpu.setdefault(gpu_idx, []).append({
             "pid":          pid,
             "label":        label,
+            "model":        model,
             "vram_used_mb": vram_mb,
         })
     return by_gpu
