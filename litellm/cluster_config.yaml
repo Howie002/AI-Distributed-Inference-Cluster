@@ -12,6 +12,7 @@ model_list:
       model: openai/nomic-embed-text-v1-5
       api_base: http://10.2.35.20:8022/v1
       api_key: none
+      encoding_format: float
 
 router_settings:
   routing_strategy: least-busy
