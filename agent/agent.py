@@ -464,12 +464,21 @@ def _proxy_write_and_restart(
 
         entries = []
         for served_name, host_ip, port in sorted(seen):
-            entries.append(
-                f"  - model_name: {served_name}\n"
-                f"    litellm_params:\n"
+            params = (
                 f"      model: openai/{served_name}\n"
                 f"      api_base: http://{host_ip}:{port}/v1\n"
                 f"      api_key: none"
+            )
+            # Embedding models: vLLM rejects the `encoding_format=None` that
+            # LiteLLM injects on bare /v1/embeddings calls (global drop_params
+            # doesn't strip it). Pin float so callers need no per-request
+            # workaround. Verified against nomic-embed on a shadow proxy.
+            if "embed" in served_name.lower():
+                params += "\n      encoding_format: float"
+            entries.append(
+                f"  - model_name: {served_name}\n"
+                f"    litellm_params:\n"
+                f"{params}"
             )
 
         model_list = ("\n".join(entries)) if entries else "  []"
