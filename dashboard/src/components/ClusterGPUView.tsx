@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { GPU, ClusterNodeStatus, NodeConfig, PendingLaunch, VLLMInstance } from "@/lib/types";
+import { createNodeApi } from "@/lib/api";
 import { LaunchLogModal } from "./LaunchLogModal";
 
 function vramPct(gpu: GPU) { return gpu.vram_total_mb > 0 ? Math.round((gpu.vram_used_mb / gpu.vram_total_mb) * 100) : 0; }
@@ -36,9 +37,20 @@ function StatBox({ label, value, sub, valueClass = "text-white", bar }: StatBoxP
   );
 }
 
+// Compact key/value pair for the inline per-instance config panel on a GPU card.
+function Detail({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline gap-1.5 min-w-0">
+      <span className="text-slate-500 uppercase tracking-wider flex-shrink-0">{label}</span>
+      <span className="text-slate-200 font-medium truncate" title={value}>{value}</span>
+    </div>
+  );
+}
+
 interface Props {
   nodeStatuses: ClusterNodeStatus[];
   pendingLaunches?: PendingLaunch[];
+  onRefreshAll?: () => void;
 }
 
 // Banner shown above the VRAM bar while a model is loading on a GPU. Driven
@@ -117,9 +129,25 @@ function gpuLoadingState(
   return null;
 }
 
-export function ClusterGPUView({ nodeStatuses, pendingLaunches = [] }: Props) {
+export function ClusterGPUView({ nodeStatuses, pendingLaunches = [], onRefreshAll }: Props) {
   const [expanded, setExpanded] = useState<{ nodeKey: string; gpuIndex: number } | null>(null);
   const [logViewer, setLogViewer] = useState<{ node: NodeConfig; port: number; label: string } | null>(null);
+  // Which process row has its config detail expanded, and which is mid-stop.
+  const [openProc, setOpenProc] = useState<string | null>(null);
+  const [stopping, setStopping] = useState<string | null>(null);
+
+  async function handleStop(node: NodeConfig, port: number, rowKey: string) {
+    if (!confirm(`Stop this instance on port ${port}?`)) return;
+    setStopping(rowKey);
+    try {
+      await createNodeApi(node).stop(port);
+      onRefreshAll?.();
+    } catch (e) {
+      alert(`Failed to stop: ${e}`);
+    } finally {
+      setStopping(null);
+    }
+  }
 
   // Flatten all GPUs from all online nodes into one list
   const flatGpus: FlatGPU[] = nodeStatuses.flatMap(ns => {
@@ -231,27 +259,58 @@ export function ClusterGPUView({ nodeStatuses, pendingLaunches = [] }: Props) {
                           ? (ns.status!.instances.find(i => i.served_name === proc.model || i.model_id === proc.model)
                              ?? ns.status!.instances.find(i => i.gpu_index === gpu.index))
                           : undefined;
+                        const procKey = `${nodeKey}:${proc.pid}`;
+                        const detailOpen = openProc === procKey;
+                        const isStopping = stopping === procKey;
                         return (
-                          <div key={proc.pid} className="flex items-center gap-1.5 text-xs bg-slate-800 rounded px-2 py-1" onClick={e => e.stopPropagation()}>
-                            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                              vllmInst
-                                ? vllmInst.status === "healthy" ? "bg-emerald-400" : "bg-amber-400 animate-pulse"
-                                : "bg-slate-500"
-                            }`} />
-                            <span className="text-slate-300 truncate flex-1 min-w-0">{proc.label}</span>
-                            <span className="text-slate-500 flex-shrink-0">{vramGB(proc.vram_used_mb)}G</span>
-                            {vllmInst && (
-                              <button
-                                onClick={() => setLogViewer({
-                                  node,
-                                  port: vllmInst.port,
-                                  label: vllmInst.served_name ?? vllmInst.model_id ?? `port ${vllmInst.port}`,
-                                })}
-                                className="text-[10px] px-1 rounded text-slate-500 hover:text-cyan-300 hover:bg-slate-700 flex-shrink-0"
-                                title="View vLLM launch log"
-                              >
-                                log
-                              </button>
+                          <div key={proc.pid} className="bg-slate-800 rounded overflow-hidden" onClick={e => e.stopPropagation()}>
+                            <div
+                              className={`flex items-center gap-1.5 text-xs px-2 py-1 ${vllmInst ? "cursor-pointer hover:bg-slate-700/60" : ""}`}
+                              onClick={vllmInst ? () => setOpenProc(detailOpen ? null : procKey) : undefined}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                                vllmInst
+                                  ? vllmInst.status === "healthy" ? "bg-emerald-400" : "bg-amber-400 animate-pulse"
+                                  : "bg-slate-500"
+                              }`} />
+                              <span className="text-slate-300 truncate flex-1 min-w-0" title={proc.label}>{proc.label}</span>
+                              {vllmInst && <span className="text-cyan-400/80 font-mono flex-shrink-0">:{vllmInst.port}</span>}
+                              <span className="text-slate-500 flex-shrink-0">{vramGB(proc.vram_used_mb)}G</span>
+                              {vllmInst && <span className="text-slate-600 flex-shrink-0">{detailOpen ? "▲" : "▼"}</span>}
+                            </div>
+
+                            {vllmInst && detailOpen && (
+                              <div className="px-2 pb-2 pt-1 border-t border-slate-700/60 space-y-1.5">
+                                <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+                                  <Detail label="Context" value={vllmInst.context_length != null ? `${Math.round(vllmInst.context_length / 1000)}K` : "—"} />
+                                  <Detail label="Quant" value={vllmInst.quantization ?? "bf16"} />
+                                  <Detail label="GPU mem" value={vllmInst.gpu_memory_utilization != null ? `${Math.round(vllmInst.gpu_memory_utilization * 100)}%` : "—"} />
+                                  <Detail label="Slots" value={vllmInst.max_num_seqs != null ? String(vllmInst.max_num_seqs) : "256"} />
+                                  <Detail label="TP" value={vllmInst.tensor_parallel_size != null ? `${vllmInst.tensor_parallel_size}×` : "1×"} />
+                                  <Detail label="PID" value={String(vllmInst.pid)} />
+                                </div>
+                                <p className="text-[10px] font-mono text-cyan-400/80 break-all">http://{node.ip}:{vllmInst.port}/v1</p>
+                                <div className="flex items-center gap-2 pt-0.5">
+                                  <button
+                                    onClick={e => { e.stopPropagation(); setLogViewer({
+                                      node, port: vllmInst.port,
+                                      label: vllmInst.served_name ?? vllmInst.model_id ?? `port ${vllmInst.port}`,
+                                    }); }}
+                                    className="text-[10px] px-2 py-0.5 rounded bg-slate-700 text-slate-300 hover:text-cyan-300 hover:bg-slate-600"
+                                    title="View vLLM launch log"
+                                  >
+                                    log
+                                  </button>
+                                  <button
+                                    onClick={e => { e.stopPropagation(); handleStop(node, vllmInst.port, procKey); }}
+                                    disabled={isStopping}
+                                    className="text-[10px] px-2 py-0.5 rounded bg-red-900/40 text-red-300 hover:bg-red-800/60 disabled:opacity-40"
+                                    title="Stop this vLLM instance"
+                                  >
+                                    {isStopping ? "Stopping…" : "Stop"}
+                                  </button>
+                                </div>
+                              </div>
                             )}
                           </div>
                         );

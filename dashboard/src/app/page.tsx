@@ -208,7 +208,7 @@ export default function Page() {
         <>
           {/* Cluster GPU pool */}
           {nodeStatuses.length > 0 && (
-            <ClusterGPUView nodeStatuses={nodeStatuses} pendingLaunches={pendingLaunches} />
+            <ClusterGPUView nodeStatuses={nodeStatuses} pendingLaunches={pendingLaunches} onRefreshAll={refreshAll} />
           )}
 
           {/* Running instances across all nodes */}
