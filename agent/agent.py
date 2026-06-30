@@ -428,14 +428,14 @@ def _proxy_write_and_restart(
         return
 
     with _PROXY_LOCK:
-        # Build deduplicated (served_name, ip, port) set across all nodes
+        # Build deduplicated (served_name, ip, port, is_embedding) set across all nodes
         seen: set[tuple] = set()
 
         # Local instances
         for inst in _scan_vllm_instances():
             s, p = inst.get("served_name"), inst.get("port")
             if s and p and s != remove_served:
-                seen.add((s, THIS_IP, p))
+                seen.add((s, THIS_IP, p, bool(inst.get("is_embedding"))))
 
         # Child node instances — query each node's agent in parallel
         child_nodes = [
@@ -453,24 +453,29 @@ def _proxy_write_and_restart(
                 for inst in child_insts:
                     s, p = inst.get("served_name"), inst.get("port")
                     if s and p and s != remove_served:
-                        seen.add((s, child_ip, p))
+                        seen.add((s, child_ip, p, bool(inst.get("is_embedding"))))
 
         if extra_add:
             s = extra_add.get("served_name")
             p = extra_add.get("port")
             host = extra_add.get("ip", THIS_IP)
             if s and p:
-                seen.add((s, host, p))
+                seen.add((s, host, p, bool(extra_add.get("is_embedding"))))
 
         entries = []
-        for served_name, host_ip, port in sorted(seen):
-            entries.append(
+        for served_name, host_ip, port, is_embedding in sorted(seen):
+            entry = (
                 f"  - model_name: {served_name}\n"
                 f"    litellm_params:\n"
                 f"      model: openai/{served_name}\n"
                 f"      api_base: http://{host_ip}:{port}/v1\n"
                 f"      api_key: none"
             )
+            # Embedding models must be flagged so LiteLLM routes /v1/embeddings to
+            # them; without mode=embedding the proxy 400s with "Invalid model name".
+            if is_embedding:
+                entry += "\n    model_info:\n      mode: embedding"
+            entries.append(entry)
 
         # Merge static model entries (audio services, etc.) not managed by the agent.
         # Reads litellm/static_models.yaml; these entries survive every proxy rewrite.
@@ -774,6 +779,7 @@ def _scan_vllm_instances() -> list[dict]:
         quantization      = None
         tensor_parallel   = None
         max_num_seqs      = None
+        is_embedding      = False
         try:
             cmdline = psutil.Process(pid).cmdline()
             for i, arg in enumerate(cmdline):
@@ -795,6 +801,13 @@ def _scan_vllm_instances() -> list[dict]:
                 if arg == "--max-num-seqs" and i + 1 < len(cmdline):
                     try: max_num_seqs = int(cmdline[i + 1])
                     except ValueError: pass
+                # Embedding/pooling models are launched with `--runner pooling`
+                # (newer vLLM) or `--task embed`/`embedding` (older). LiteLLM needs
+                # these flagged as `mode: embedding` or its /embeddings route 400s.
+                if arg == "--runner" and i + 1 < len(cmdline) and cmdline[i + 1] == "pooling":
+                    is_embedding = True
+                if arg == "--task" and i + 1 < len(cmdline) and cmdline[i + 1].startswith("embed"):
+                    is_embedding = True
         except Exception:
             pass
 
@@ -818,6 +831,7 @@ def _scan_vllm_instances() -> list[dict]:
             "quantization":          quantization,
             "tensor_parallel_size":  tensor_parallel,
             "max_num_seqs":          max_num_seqs,
+            "is_embedding":          is_embedding,
         })
 
     return instances
