@@ -3206,8 +3206,21 @@ def _on_startup():
     # Master role itself doesn't typically host vLLM instances, but the loop
     # is cheap if data/intended_instances.json is empty, and turning it on
     # for "both" role is the only path that matters in practice.
-    if _NODE_CFG.get("auto_restart_failed_instances", True):
-        threading.Thread(target=_instance_watchdog_loop, daemon=True).start()
+    #
+    # ── DISABLED 2026-07-01 ──────────────────────────────────────────────────
+    # The auto-restart watchdog is turned OFF for now. On this cluster it was
+    # doing more harm than good: an intermittently-empty instance scan
+    # (psutil.net_connections returning nothing) made it think healthy instances
+    # were "missing" and relaunch them, and launch_instance's VRAM reclaim then
+    # killed the healthy copy — a self-inflicted crash-loop (observed on gemma
+    # :8020 and the 196K :8021). Code below is preserved for future work; re-enable
+    # once (a) the scan is made robust and (b) reclaim never kills a healthy
+    # co-located/same instance. To restore: uncomment the two lines below.
+    # See: SB quick note 2026-07-01 + AI Distributed Inference Cluster Notes/Roadmap.
+    #
+    # if _NODE_CFG.get("auto_restart_failed_instances", True):
+    #     threading.Thread(target=_instance_watchdog_loop, daemon=True).start()
+    # ─────────────────────────────────────────────────────────────────────────
     # Cluster discovery: child nodes scan the configured CIDR range for a
     # master, then register. Master self-discovery is a no-op. Quietly skipped
     # if there's no cluster token (legacy configs).
