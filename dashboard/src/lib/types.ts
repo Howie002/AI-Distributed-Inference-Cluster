@@ -42,6 +42,22 @@ export interface ProxyStatus {
   url?: string;
 }
 
+// One inference proxy found by the VLAN auto-discovery scan.
+export interface DiscoveredProxy {
+  url: string;
+  models: string[];
+}
+
+// Result of GET /proxy/discover — a read-only scan of the AI-VLAN CIDR range
+// for OpenAI-compatible LiteLLM proxies and their advertised models.
+export interface ProxyDiscovery {
+  ranges: string[];
+  scanned: number;
+  port: number;
+  configured_url: string;
+  proxies: DiscoveredProxy[];
+}
+
 export interface UpdateStatus {
   behind: number;
   ahead: number;

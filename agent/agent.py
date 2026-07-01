@@ -2034,6 +2034,66 @@ def proxy_sync():
     return {"queued": True}
 
 
+def _probe_proxy_one(ip: str, port: int, timeout: float = 1.0) -> Optional[dict]:
+    """Probe a single host for an OpenAI-compatible LiteLLM proxy on `port`.
+    Returns {url, models} if /v1/models responds with a non-empty model list,
+    else None. Short timeout — discovery fans out across the whole VLAN in
+    parallel and must not block on dead IPs. Read-only."""
+    url = f"http://{ip}:{port}"
+    try:
+        req = urllib.request.Request(
+            f"{url}/v1/models",
+            headers={"Authorization": f"Bearer {LITELLM_KEY}"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return None
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return None
+    models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+    if not models:
+        return None
+    return {"url": url, "models": models}
+
+
+@app.get("/proxy/discover")
+def discover_proxies(port: int = 4000):
+    """Auto-discover the inference proxy across the AI VLAN.
+
+    Scans the configured discovery CIDR range(s) for a running LiteLLM proxy
+    (OpenAI-compatible /v1/models on `port`, default 4000) and returns every
+    endpoint found with its advertised models. Lets the dashboard populate the
+    inference-proxy entry + model list without a node being manually
+    registered. Read-only (probes only, never mutates) — safe to call any
+    time. Reuses the same CIDR range the cluster already scans for the master
+    (capped at 1024 hosts by _iter_discovery_ips)."""
+    ips = _iter_discovery_ips()
+    found: list[dict] = []
+    if ips:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(64, len(ips))) as ex:
+            futures = [ex.submit(_probe_proxy_one, ip, port) for ip in ips]
+            for fut in concurrent.futures.as_completed(futures):
+                res = fut.result()
+                if res:
+                    found.append(res)
+    # Make sure the proxy this node is already configured against is represented
+    # even if it sits outside the scanned range (e.g. a hostname-based entry).
+    configured = get_proxy_status()
+    if configured.get("healthy") and configured.get("url") \
+            and not any(f["url"] == configured["url"] for f in found):
+        found.append({"url": configured["url"], "models": configured.get("models", [])})
+    found.sort(key=lambda f: f["url"])
+    return {
+        "ranges": DISCOVERY_RANGES,
+        "scanned": len(ips),
+        "port": port,
+        "configured_url": CLUSTER_PROXY_URL,
+        "proxies": found,
+    }
+
+
 # ── Stack configuration endpoints ────────────────────────────────────────────
 
 def _load_stack_configs() -> list[dict]:

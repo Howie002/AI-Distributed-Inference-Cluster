@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import type { ClusterNodeStatus, NodeConfig, UpdateStatus } from "@/lib/types";
+import type { ClusterNodeStatus, NodeConfig, UpdateStatus, ProxyDiscovery } from "@/lib/types";
 import { createNodeApi } from "@/lib/api";
 
 interface Props {
   nodeStatuses: ClusterNodeStatus[];
+  masterNode: NodeConfig | null;
   onRefresh: () => void;
 }
 
@@ -28,7 +29,25 @@ function StatusPill({ u }: { u: UpdateStatus }) {
   return <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/30 text-emerald-400">up to date</span>;
 }
 
-export function SettingsView({ nodeStatuses, onRefresh }: Props) {
+export function SettingsView({ nodeStatuses, masterNode, onRefresh }: Props) {
+  // AI model discovery (VLAN scan) state
+  const [scanning, setScanning] = useState(false);
+  const [discovery, setDiscovery] = useState<ProxyDiscovery | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+
+  const scanVlan = useCallback(async () => {
+    if (!masterNode) return;
+    setScanning(true);
+    setScanError(null);
+    try {
+      setDiscovery(await createNodeApi(masterNode).discoverProxies());
+    } catch (e) {
+      setScanError(String(e).replace(/^Error:\s*/, ""));
+    } finally {
+      setScanning(false);
+    }
+  }, [masterNode]);
+
   const [rowStates, setRowStates] = useState<Record<string, RowState>>({});
   const [rowMessages, setRowMessages] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -136,6 +155,89 @@ export function SettingsView({ nodeStatuses, onRefresh }: Props) {
 
   return (
     <div className="space-y-4">
+
+      {/* AI model discovery — VLAN scan for the inference proxy + models */}
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-white">AI model search</p>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              Auto-discover the inference proxy and its models across the AI VLAN
+              {discovery?.ranges?.length ? (
+                <span className="font-mono text-slate-600"> · {discovery.ranges.join(", ")}</span>
+              ) : null}
+            </p>
+          </div>
+          <button
+            onClick={scanVlan}
+            disabled={scanning || !masterNode}
+            className="text-xs px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
+            title={!masterNode ? "No reachable master node to scan from" : "Scan the AI VLAN for inference proxies"}
+          >
+            {scanning ? "Scanning…" : "Scan AI VLAN"}
+          </button>
+        </div>
+
+        <div className="px-4 py-3">
+          {scanError && <p className="text-[11px] text-red-400">{scanError}</p>}
+
+          {!scanError && !discovery && (
+            <p className="text-[11px] text-slate-500">
+              Scan probes every host in the cluster discovery range for an
+              OpenAI-compatible proxy (<span className="font-mono">/v1/models</span> on
+              port 4000). Read-only — nothing is changed.
+            </p>
+          )}
+
+          {discovery && (
+            <div className="space-y-3">
+              <p className="text-[11px] text-slate-500">
+                Scanned <span className="text-slate-300">{discovery.scanned}</span> host
+                {discovery.scanned !== 1 ? "s" : ""} · found{" "}
+                <span className="text-slate-300">{discovery.proxies.length}</span> prox
+                {discovery.proxies.length !== 1 ? "ies" : "y"}
+              </p>
+
+              {discovery.proxies.length === 0 ? (
+                <p className="text-[11px] text-amber-300">
+                  No inference proxy responded on the VLAN. Is the LiteLLM proxy running on the master?
+                </p>
+              ) : (
+                discovery.proxies.map((p) => {
+                  const isConfigured = p.url === discovery.configured_url;
+                  return (
+                    <div key={p.url} className="bg-slate-800/40 rounded-lg px-3 py-2.5 space-y-1.5">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-mono text-white">{p.url}</span>
+                        {isConfigured && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/30 text-emerald-400">
+                            configured
+                          </span>
+                        )}
+                        <span className="text-[10px] text-slate-500">
+                          {p.models.length} model{p.models.length !== 1 ? "s" : ""}
+                        </span>
+                      </div>
+                      {p.models.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {p.models.map((m) => (
+                            <span
+                              key={m}
+                              className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300 font-mono"
+                            >
+                              {m}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Cluster updates section */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">

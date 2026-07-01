@@ -260,7 +260,7 @@ export default function Page() {
       )}
 
       {tab === "settings" && nodeStatuses.length > 0 && (
-        <SettingsView nodeStatuses={nodeStatuses} onRefresh={refreshAll} />
+        <SettingsView nodeStatuses={nodeStatuses} masterNode={masterNode} onRefresh={refreshAll} />
       )}
 
     </div>

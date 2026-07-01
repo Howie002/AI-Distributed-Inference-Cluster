@@ -2,7 +2,7 @@ import type {
   FullStatus, ModelEntry, LaunchRequest, NodeConfig, StackConfig, StackModelConfig,
   PreflightResult, RepackResult, RepackAssignment, MetricsQueryResult,
   HFTokenStatus, HFLookup, CachedModel, CacheStats, DownloadState,
-  UpdateStatus, UpdateConfig, DynamicLog, DiagnoseResult,
+  UpdateStatus, UpdateConfig, DynamicLog, DiagnoseResult, ProxyDiscovery,
 } from "./types";
 
 // Build a direct URL to a node's agent (browser calls this cross-origin)
@@ -89,6 +89,11 @@ export function createNodeApi(node: NodeConfig) {
     // Forensic snapshot — GPU/RAM allocations the agent doesn't own.
     // Surfaces reparented vLLM workers, leaked shm, etc. Backs DiagnoseModal.
     diagnose:             ()                                        => get<DiagnoseResult>         (base, "/diagnose", 15000),
+
+    // Auto-discover the inference proxy + its models across the AI VLAN.
+    // Read-only scan of the cluster's discovery CIDR range; generous timeout
+    // since it probes up to ~1024 hosts (capped concurrency) before returning.
+    discoverProxies:  ()                     => get<ProxyDiscovery>(base, "/proxy/discover", 30000),
 
     // HF integration — per node
     hfTokenStatus:   ()                      => get<HFTokenStatus> (base, "/models/hf/token"),
