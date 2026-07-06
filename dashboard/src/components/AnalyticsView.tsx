@@ -238,7 +238,7 @@ export function AnalyticsView({ nodes }: Props) {
 
       {!loading && !anyData && (
         <div className="bg-card border border-border rounded-xl px-4 py-6 text-sm text-slate-500 text-center">
-          No samples yet in the selected range. The sampler writes every 60s — first bucket appears within 1–2 minutes of agent start.
+          No samples yet in the selected range. The sampler writes every 60s; first bucket appears within 1–2 minutes of agent start.
         </div>
       )}
 
@@ -297,7 +297,7 @@ export function AnalyticsView({ nodes }: Props) {
 
       {/* ── TTFT p95 per model ──────────────────────────────────────── */}
       {ttftRows.length > 0 && (
-        <ChartCard title="Time to First Token — p95 (ms)" subtitle="Approximated from vLLM histogram buckets. Lower is better.">
+        <ChartCard title="Time to First Token · p95 (ms)" subtitle="Approximated from vLLM histogram buckets. Lower is better.">
           <ResponsiveContainer width="100%" height={220}>
             <LineChart data={ttftRows}>
               <CartesianGrid stroke="#1e293b" />

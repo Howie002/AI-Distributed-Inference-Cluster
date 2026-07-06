@@ -109,7 +109,7 @@ export function AddNodeModal({ masterIp, onClose, onAdded }: Props) {
                   onChange={(e) => { setPreviewPort(Number(e.target.value)); setAgentPort(Number(e.target.value)); }}
                   className="w-24 bg-slate-800 border border-border rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
                 />
-                <span className="text-xs text-slate-600">(default 5000 — change if port is taken)</span>
+                <span className="text-xs text-slate-600">(default 5000; change if port is taken)</span>
               </div>
 
               {/* Command block */}
@@ -150,7 +150,7 @@ export function AddNodeModal({ masterIp, onClose, onAdded }: Props) {
               <p className="text-xs text-slate-500">
                 Replace <code className="text-red-300 font-mono">&lt;child-ip&gt;</code> with the child machine&apos;s
                 actual IP address. If the repo is already cloned on that machine, skip the first line.
-                Setup installs dependencies, configures the agent, and starts it automatically — it takes a few minutes.
+                Setup installs dependencies, configures the agent, and starts it automatically; it takes a few minutes.
               </p>
             </div>
 
@@ -213,7 +213,7 @@ export function AddNodeModal({ masterIp, onClose, onAdded }: Props) {
                       {testing ? "Testing…" : "Test connection"}
                     </button>
                     {testResult === "ok"   && <span className="text-xs text-emerald-400">Agent is online and reachable.</span>}
-                    {testResult === "fail" && <span className="text-xs text-amber-400">Not reachable — check that setup completed and the agent is running.</span>}
+                    {testResult === "fail" && <span className="text-xs text-amber-400">Not reachable; check that setup completed and the agent is running.</span>}
                   </div>
                 )}
 
@@ -245,7 +245,7 @@ export function AddNodeModal({ masterIp, onClose, onAdded }: Props) {
             </div>
             <p className="text-xs text-slate-400">
               The node will appear in the dashboard immediately. If it shows as unreachable, the agent
-              may still be starting — it should come online within a minute of setup completing.
+              may still be starting; it should come online within a minute of setup completing.
             </p>
             <div className="flex justify-end">
               <button

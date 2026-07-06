@@ -96,7 +96,7 @@ export function SettingsView({ nodeStatuses, masterNode, onRefresh }: Props) {
           return;
         } catch { /* still restarting */ }
       }
-      setState(n, "error", "Node did not come back in 90s — check agent.log");
+      setState(n, "error", "Node did not come back in 90s; check agent.log");
     } catch (e) {
       setState(n, "error", String(e).replace(/^Error:\s*/, ""));
     }
@@ -185,7 +185,7 @@ export function SettingsView({ nodeStatuses, masterNode, onRefresh }: Props) {
             <p className="text-[11px] text-slate-500">
               Scan probes every host in the cluster discovery range for an
               OpenAI-compatible proxy (<span className="font-mono">/v1/models</span> on
-              port 4000). Read-only — nothing is changed.
+              port 4000). Read-only; nothing is changed.
             </p>
           )}
 
@@ -319,9 +319,9 @@ export function SettingsView({ nodeStatuses, masterNode, onRefresh }: Props) {
                       className="text-[11px] px-3 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                       title={
                         !u ? "No update data"
-                        : u.dirty ? "Local uncommitted changes — commit or stash first"
+                        : u.dirty ? "Local uncommitted changes; commit or stash first"
                         : u.behind === 0 ? "Already up to date"
-                        : u.error ? "Check failed — retry first"
+                        : u.error ? "Check failed; retry first"
                         : "Pull and restart"
                       }
                     >
@@ -373,7 +373,7 @@ export function SettingsView({ nodeStatuses, masterNode, onRefresh }: Props) {
                         className="accent-cyan-500 w-3.5 h-3.5"
                       />
                       Auto-pull on <span className="font-mono text-slate-400">./node.sh start</span>
-                      <span className="text-slate-600">— fast-forwards from origin if clean, skips on dirty tree or network failure</span>
+                      <span className="text-slate-600">(fast-forwards from origin if clean, skips on dirty tree or network failure)</span>
                     </label>
                     <p className="text-[10px] text-slate-600">Written to this node&apos;s node_config.json and its git remote.</p>
                   </div>

@@ -228,7 +228,7 @@ export function DeployModal({ model, clusterGpus, allInstances, onClose, onLaunc
             <input type="range" min={20} max={95} step={5} value={gpuMemUtil}
               onChange={e => setGpuMemUtil(Number(e.target.value))} className="w-full accent-blue-500" />
             <div className="flex justify-between text-xs text-slate-500 mt-1">
-              <span>20% — minimal</span><span>95% — maximum</span>
+              <span>20% · minimal</span><span>95% · maximum</span>
             </div>
 
             {/* VRAM breakdown */}
@@ -264,12 +264,12 @@ export function DeployModal({ model, clusterGpus, allInstances, onClose, onLaunc
               </div>
               {vram.overLimit && (
                 <p className="text-xs text-red-400">
-                  Model weights ({vram.weightsGB} GB) exceed reservation ({vram.reservedGB.toFixed(1)} GB) — increase the slider.
+                  Model weights ({vram.weightsGB} GB) exceed reservation ({vram.reservedGB.toFixed(1)} GB); increase the slider.
                 </p>
               )}
               {selectedGpus.some(cg => cg.gpu.unified_memory) && (
                 <p className="text-xs text-violet-400 mt-1">
-                  Unified memory GPU — VRAM figure reflects shared system RAM. Model weights and KV cache compete with the OS and other processes.
+                  Unified memory GPU: VRAM figure reflects shared system RAM. Model weights and KV cache compete with the OS and other processes.
                 </p>
               )}
             </div>
@@ -329,7 +329,7 @@ export function DeployModal({ model, clusterGpus, allInstances, onClose, onLaunc
             <div className="flex justify-between"><span>Model weights</span><span className="text-slate-300">{model.vram_gb} GB</span></div>
             <div className="flex justify-between">
               <span>Cached locally</span>
-              <span className={model.cached ? "text-emerald-400" : "text-slate-500"}>{model.cached ? "Yes" : "No — will download on launch"}</span>
+              <span className={model.cached ? "text-emerald-400" : "text-slate-500"}>{model.cached ? "Yes" : "No, will download on launch"}</span>
             </div>
             {vram.concurrentSeqs != null && (
               <div className="flex justify-between pt-0.5 border-t border-slate-700/50 mt-1">

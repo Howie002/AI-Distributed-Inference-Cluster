@@ -181,7 +181,7 @@ export function NodeCard({ node, status, error, onRefresh, onNodesChanged }: Pro
               onClick={() => setDiagnoseOpen(true)}
               disabled={!!agentBusy || !!dashBusy}
               className="text-xs px-2 py-0.5 rounded text-slate-500 hover:text-amber-400 hover:bg-slate-700/50 disabled:opacity-40 transition-colors"
-              title="Forensic snapshot — orphaned vLLM workers, leaked shm, unowned GPU memory"
+              title="Forensic snapshot: orphaned vLLM workers, leaked shm, unowned GPU memory"
             >
               Diagnose
             </button>

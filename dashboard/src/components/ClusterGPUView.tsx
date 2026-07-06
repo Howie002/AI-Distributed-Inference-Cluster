@@ -176,7 +176,7 @@ export function ClusterGPUView({ nodeStatuses, pendingLaunches = [] }: Props) {
                     <div className="flex items-center gap-1 min-w-0">
                       <span className="text-xs font-semibold text-slate-400 uppercase tracking-widest flex-shrink-0">GPU {gpu.index}</span>
                       {gpu.unified_memory && (
-                        <span className="text-xs px-1 py-0.5 rounded bg-violet-900/40 text-violet-300 leading-none flex-shrink-0" title="Unified memory — VRAM shares system RAM">uni</span>
+                        <span className="text-xs px-1 py-0.5 rounded bg-violet-900/40 text-violet-300 leading-none flex-shrink-0" title="Unified memory: VRAM shares system RAM">uni</span>
                       )}
                     </div>
                     <span className="text-xs px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 truncate max-w-[60px]" title={node.name}>{node.name}</span>

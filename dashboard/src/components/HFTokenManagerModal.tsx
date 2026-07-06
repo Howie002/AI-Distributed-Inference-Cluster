@@ -70,7 +70,7 @@ export function HFTokenManagerModal({ nodes, onClose, onChanged }: Props) {
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-card border border-border rounded-xl max-w-2xl w-full max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="px-5 py-4 border-b border-border">
-          <h2 className="text-base font-semibold text-white">HuggingFace Tokens — per node</h2>
+          <h2 className="text-base font-semibold text-white">HuggingFace Tokens · per node</h2>
           <p className="text-xs text-slate-500 mt-1">
             Tokens are written to <span className="font-mono">~/.cache/huggingface/token</span> on each node and used by vLLM when pulling gated repos. Tokens never leave the dashboard unencrypted in any store.
           </p>

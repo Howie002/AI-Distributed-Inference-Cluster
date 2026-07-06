@@ -101,7 +101,7 @@ export function DiagnoseModal({ node, onClose }: Props) {
                 count={data.unowned_gpu_compute_apps.length}
               >
                 {data.unowned_gpu_compute_apps.length === 0 ? (
-                  <p className="text-xs text-slate-500">None — every GPU allocation is owned by a tracked instance.</p>
+                  <p className="text-xs text-slate-500">None; every GPU allocation is owned by a tracked instance.</p>
                 ) : (
                   <table className="w-full text-xs font-mono">
                     <thead className="text-slate-500">
@@ -122,12 +122,12 @@ export function DiagnoseModal({ node, onClose }: Props) {
 
               <Section
                 title="Reparented Python / vLLM processes (PPID = 1)"
-                hint="Children that survived their parent — typically tensor-parallel workers left behind after a hard agent kill. `./node.sh stop` won't reach these."
+                hint="Children that survived their parent: typically tensor-parallel workers left behind after a hard agent kill. `./node.sh stop` won't reach these."
                 tone={data.reparented_python.length > 0 ? "warn" : "ok"}
                 count={data.reparented_python.length}
               >
                 {data.reparented_python.length === 0 ? (
-                  <p className="text-xs text-slate-500">None — no orphaned vLLM workers.</p>
+                  <p className="text-xs text-slate-500">None; no orphaned vLLM workers.</p>
                 ) : (
                   <table className="w-full text-xs font-mono">
                     <thead className="text-slate-500">
@@ -242,7 +242,7 @@ export function DiagnoseModal({ node, onClose }: Props) {
               </Section>
 
               {data.warnings.length > 0 && (
-                <Section title="Warnings" hint="Subsystems that couldn't be queried — partial results above." tone="warn" count={data.warnings.length}>
+                <Section title="Warnings" hint="Subsystems that couldn't be queried; partial results above." tone="warn" count={data.warnings.length}>
                   <ul className="text-xs text-amber-300 list-disc pl-5 space-y-0.5">
                     {data.warnings.map((w, i) => <li key={i}>{w}</li>)}
                   </ul>
@@ -253,7 +253,7 @@ export function DiagnoseModal({ node, onClose }: Props) {
         </div>
 
         <div className="px-6 py-2.5 border-t border-border text-[11px] text-slate-500">
-          Forensic snapshot — does not modify state. See ROADMAP "No way to forensically diagnose orphaned vLLM workers…".
+          Forensic snapshot: does not modify state. See ROADMAP "No way to forensically diagnose orphaned vLLM workers…".
         </div>
       </div>
     </div>

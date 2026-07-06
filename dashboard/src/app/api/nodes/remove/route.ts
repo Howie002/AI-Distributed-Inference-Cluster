@@ -75,7 +75,7 @@ export async function POST(req: Request) {
     const masterIp = (config.master as { ip?: string } | undefined)?.ip;
     const masterAgentPort = (config.master as { agent_port?: number } | undefined)?.agent_port ?? 5000;
     if (!masterIp) {
-      return NextResponse.json({ error: "No master IP configured — cannot proxy remove" }, { status: 500 });
+      return NextResponse.json({ error: "No master IP configured; cannot proxy remove" }, { status: 500 });
     }
 
     let res: Response;
@@ -89,7 +89,7 @@ export async function POST(req: Request) {
       );
     } catch (e) {
       return NextResponse.json(
-        { error: `Could not reach master agent at ${masterIp}:${masterAgentPort} — ${String(e)}` },
+        { error: `Could not reach master agent at ${masterIp}:${masterAgentPort} (${String(e)})` },
         { status: 504 },
       );
     }

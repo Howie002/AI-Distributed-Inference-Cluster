@@ -204,7 +204,7 @@ function RepackPanel({ result, applying, onApply, onBack }: RepackPanelProps) {
 
       {changed.length === 0 && result.solvable && (
         <p className="text-xs text-slate-400 bg-slate-800/60 rounded-lg px-3 py-2">
-          No changes needed — the current assignment already fits given available VRAM.
+          No changes needed; the current assignment already fits given available VRAM.
         </p>
       )}
 
@@ -222,7 +222,7 @@ function RepackPanel({ result, applying, onApply, onBack }: RepackPanelProps) {
             {result.unsolvable.map((u) => (
               <div key={u.port} className="flex items-center justify-between text-xs">
                 <span className="text-red-300 font-medium">{u.served_name}</span>
-                <span className="text-red-400">{u.required_gb} GB required — no GPU has enough free VRAM</span>
+                <span className="text-red-400">{u.required_gb} GB required; no GPU has enough free VRAM</span>
               </div>
             ))}
           </div>
@@ -246,7 +246,7 @@ function RepackPanel({ result, applying, onApply, onBack }: RepackPanelProps) {
           onClick={onApply}
           disabled={applying || !result.solvable}
           className="px-4 py-1.5 text-sm rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-50 transition-colors"
-          title={!result.solvable ? "Some models cannot be placed — free VRAM on more GPUs first" : ""}
+          title={!result.solvable ? "Some models cannot be placed; free VRAM on more GPUs first" : ""}
         >
           {applying ? "Applying…" : "Apply & Activate"}
         </button>
@@ -288,7 +288,7 @@ function PreflightPanel({
     <div className="border border-blue-500/30 bg-slate-900/70 rounded-xl px-4 py-4 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm font-semibold text-white">Allocation check — {configName}</p>
+          <p className="text-sm font-semibold text-white">Allocation check · {configName}</p>
           <p className="text-xs text-slate-500 mt-0.5">Based on current free VRAM across GPUs</p>
         </div>
         {result.all_fit ? (

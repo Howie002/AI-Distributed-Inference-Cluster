@@ -46,7 +46,7 @@ export function HFImporterModal({ node, onClose, onAdded }: Props) {
     try {
       const result = await createNodeApi(node).hfLookup(id);
       if (result.status !== "ok") {
-        setError(`${result.status}: ${result.message ?? "unknown"}${result.status === "gated_unauthorized" ? " — set an HF token on this node first." : ""}`);
+        setError(`${result.status}: ${result.message ?? "unknown"}${result.status === "gated_unauthorized" ? "; set an HF token on this node first." : ""}`);
         setLookup(null);
       } else {
         setLookup(result);
@@ -142,7 +142,7 @@ export function HFImporterModal({ node, onClose, onAdded }: Props) {
 
               {lookup.gated && (
                 <div className="px-3 py-2 rounded bg-amber-950/40 border border-amber-800 text-xs text-amber-300">
-                  This repo is gated. The node&apos;s HF token has access, so downloads will work here — but confirm other nodes have their own tokens before deploying there.
+                  This repo is gated. The node&apos;s HF token has access, so downloads will work here, but confirm other nodes have their own tokens before deploying there.
                 </div>
               )}
 

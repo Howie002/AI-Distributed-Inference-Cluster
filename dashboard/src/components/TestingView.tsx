@@ -44,7 +44,7 @@ const PRESETS: {
     id: "connectivity",
     label: "Connectivity",
     badge: "8 req",
-    description: "Quick sanity check — verifies all backends respond and measures baseline latency.",
+    description: "Quick sanity check: verifies all backends respond and measures baseline latency.",
     n: 8,
     maxTokens: 20,
     temperature: 0,
@@ -337,7 +337,7 @@ export function TestingView({ nodeStatuses }: Props) {
               })}
             </div>
           ) : (
-            <span className="text-xs text-red-400">No proxy models — start a vLLM instance first</span>
+            <span className="text-xs text-red-400">No proxy models; start a vLLM instance first</span>
           )}
           {multiModel && (
             <p className="text-[10px] text-slate-500">

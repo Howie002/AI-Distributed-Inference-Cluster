@@ -25,16 +25,16 @@ interface EndpointDef {
 }
 
 const PROXY_ENDPOINTS: EndpointDef[] = [
-  { label: "Chat completions",   path: "/v1/chat/completions", desc: "Primary endpoint for chat models. OpenAI-compatible — works with the openai SDK by pointing base_url here.", accent: true },
+  { label: "Chat completions",   path: "/v1/chat/completions", desc: "Primary endpoint for chat models. OpenAI-compatible: works with the openai SDK by pointing base_url here.", accent: true },
   { label: "Completions",        path: "/v1/completions",      desc: "Legacy non-chat text completion. Some older models expect this format; most new models want /chat/completions." },
   { label: "Embeddings",         path: "/v1/embeddings",       desc: "Convert text to vectors. Only works if an embedding model (e.g. GTE-Qwen2) is registered on the proxy." },
   { label: "List models",        path: "/v1/models",           desc: "Returns the set of model names the proxy currently routes to. Useful for clients that discover models dynamically." },
   { label: "Health",             path: "/health",              desc: "200 when the proxy is up. Used by monitoring and the dashboard's status dot." },
-  { label: "Metrics (Prometheus)", path: "/metrics",           desc: "LiteLLM's metrics — request counts, 4xx/5xx per model, latency. Scraped by the Analytics tab." },
+  { label: "Metrics (Prometheus)", path: "/metrics",           desc: "LiteLLM's metrics: request counts, 4xx/5xx per model, latency. Scraped by the Analytics tab." },
 ];
 
 const VLLM_ENDPOINTS: EndpointDef[] = [
-  { label: "Chat completions",     path: "/v1/chat/completions", desc: "Primary endpoint. Same OpenAI schema as the proxy — bypasses load balancing and targets this one instance.", accent: true },
+  { label: "Chat completions",     path: "/v1/chat/completions", desc: "Primary endpoint. Same OpenAI schema as the proxy; bypasses load balancing and targets this one instance.", accent: true },
   { label: "Completions",          path: "/v1/completions",      desc: "Legacy text completion (non-chat). Available on all chat models but most should use /chat/completions." },
   { label: "Embeddings",           path: "/v1/embeddings",       desc: "Only responds if this instance is running an embedding model (e.g. GTE-Qwen2). Chat models return an error." },
   { label: "List models",          path: "/v1/models",           desc: "Returns the single served_name this instance exposes. The proxy queries this when auto-discovering backends." },
@@ -151,7 +151,7 @@ export function PortTreeView({ nodeStatuses }: Props) {
                               <span className="text-emerald-300 min-w-[200px]">{modelName}</span>
                               <span className="text-slate-600">→</span>
                               {backends.length === 0 ? (
-                                <span className="text-amber-400">no backend found (registered but no matching vLLM instance — likely the instance was stopped)</span>
+                                <span className="text-amber-400">no backend found (registered but no matching vLLM instance; likely the instance was stopped)</span>
                               ) : (
                                 <div className="flex flex-col gap-0.5">
                                   {backends.map(b => (
@@ -180,7 +180,7 @@ export function PortTreeView({ nodeStatuses }: Props) {
         <div className="px-4 py-3 border-b border-border">
           <h2 className="text-sm font-semibold text-white">Direct vLLM Endpoints</h2>
           <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-            Per-node port tree. Hit these directly to bypass the proxy — useful for debugging, health probes, or pinning a client to a specific instance. No load balancing; you&apos;re talking to one specific vLLM process.
+            Per-node port tree. Hit these directly to bypass the proxy: useful for debugging, health probes, or pinning a client to a specific instance. No load balancing; you&apos;re talking to one specific vLLM process.
           </p>
         </div>
 
@@ -205,7 +205,7 @@ export function PortTreeView({ nodeStatuses }: Props) {
                     <span className="text-slate-500 min-w-[110px]">agent :{node.agent_port}</span>
                     <div className="min-w-0">
                       <span className="text-slate-400">http://{node.ip}:{node.agent_port}</span>
-                      <p className="text-slate-500 text-[10px] mt-0.5 normal-case">Control agent — GPU stats, instance mgmt, HF downloads, metrics. Dashboard talks to this.</p>
+                      <p className="text-slate-500 text-[10px] mt-0.5 normal-case">Control agent: GPU stats, instance mgmt, HF downloads, metrics. Dashboard talks to this.</p>
                     </div>
                   </div>
 
@@ -214,7 +214,7 @@ export function PortTreeView({ nodeStatuses }: Props) {
                       <span className="text-slate-500 min-w-[110px]">litellm :{LITELLM_PORT}</span>
                       <div className="min-w-0">
                         <span className="text-cyan-400">{proxyUrl}/v1</span>
-                        <p className="text-slate-500 text-[10px] mt-0.5 normal-case">Cluster proxy — this node hosts it. All inference traffic ideally goes through here.</p>
+                        <p className="text-slate-500 text-[10px] mt-0.5 normal-case">Cluster proxy: this node hosts it. All inference traffic ideally goes through here.</p>
                       </div>
                     </div>
                   )}

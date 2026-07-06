@@ -11,7 +11,7 @@ export const TEST_PLOTS: string[] = [
   "A florist whose flowers bloom only when someone nearby is lying",
   "A sailor who keeps finding the same message in a bottle",
   "An architect hired to design a building that must never cast a shadow",
-  "A teacher whose students never forget anything she says — literally",
+  "A teacher whose students never forget anything she says (literally)",
   "A barber whose haircuts accidentally change a person's personality",
   "A magician who lost real magic and must fake it to keep people's hope alive",
   "A veterinarian who can speak to animals but cannot tell anyone what they say",
