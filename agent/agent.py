@@ -496,7 +496,7 @@ def _proxy_write_and_restart(
             "  routing_strategy: least-busy\n"
             "  num_retries: 3\n"
             # 150s (was 30s): a full non-streaming generation at ~30-35 tok/s
-            # legitimately runs 25-45s for document extraction (Tetrix) and
+            # legitimately runs 25-45s for document extraction (Providence) and
             # 80-120s for long syntheses (HR) — 30s 408'd that slow tail, and
             # num_retries x 30s wedged callers for minutes. 150 keeps the
             # defensive-timeout cascade ordered: NGINX 180 > tool clients ~170
