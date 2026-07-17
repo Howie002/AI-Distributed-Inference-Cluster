@@ -15,7 +15,7 @@ Enduring project tracking the build-out, migration, maintenance, and evolution o
 ## Status
 **Current Phase:** v2 Cluster - Operational Hardening + Analytics Follow-on
 **Started:** 2025
-**Last Updated:** 2026-04-27
+**Last Updated:** 2026-07-17
 
 ## Current Architecture (v2)
 
@@ -110,4 +110,4 @@ RTX Pro 6000 Blackwell cards provide substantially more GPU memory than the DGX 
 
 **Filed Under:** Work Projects > Active Priority
 **Created:** 2026-03-05
-**Last Updated:** 2026-04-27
+**Last Updated:** 2026-07-17

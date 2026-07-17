@@ -15,7 +15,7 @@ http://10.2.35.10:4000/v1
 
 | Served name | Use for | Backend | Max context |
 |---|---|---|---|
-| `gemma-4-26b-a4b-nvfp4` | Chat / completions | GPU Server 1 (`10.2.35.30:8020`) | 100K |
+| `gemma-4-26b-a4b-nvfp4` | Chat / completions | GPU Server 1 (`10.2.35.30:8020`) + Death Star (`10.2.35.20:8021`/`:8023`) | 100K |
 | `nomic-embed-text-v1-5` | Embeddings | Death Star (`10.2.35.20:8022`) | 2048 |
 
 - `gemma-4-26b-a4b-nvfp4` is instruction-tuned (NVFP4 quant) and works natively via `/v1/chat/completions`.

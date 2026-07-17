@@ -1,7 +1,7 @@
 # AI Distributed Inference Cluster — Roadmap
 
 **Repo:** [github.com/Howie002/AI-Distributed-Inference-Cluster](https://github.com/Howie002/AI-Distributed-Inference-Cluster) (private, active on `dev`)
-**Last Synced:** 2026-06-24
+**Last Synced:** 2026-07-17
 **Current Phase:** v2 Cluster — operational hardening + analytics follow-on
 **Target Production:** Ongoing operational service
 
@@ -108,7 +108,9 @@ Operational tasks layered on top of the running cluster. Not code features — h
 
 ---
 
-### 🔴 vLLM restart loop on Blackwell — CUDA 12.8 too old for SM 12.0 + watchdog masks the failure
+### ✅ vLLM restart loop on Blackwell — CUDA 12.8 too old for SM 12.0 + watchdog masks the failure — RESOLVED 2026-07-02
+
+**Resolved 2026-07-02:** CUDA/sm120 blocker cleared; Death Star (10.2.35.20) serves nvfp4 gemma on :8021/:8023 + nomic-embed-text-v1-5 on :8022 in production (verified; Deep Research Heavy-depth confirmed 07-07).
 
 **Priority:** Critical — cluster cannot serve any NVFP4 model on RTX PRO 6000 Blackwell hardware
 **Reported:** 2026-06-05
@@ -135,14 +137,14 @@ Master sends `POST /instances/launch` to the child agent. vLLM serve process spa
   - **SM 12.x (Blackwell) → `cuda-toolkit-13-0` or `cuda-toolkit-12-9` minimum**
 - [ ] Setup also re-checks an existing install; if installed toolkit is older than what the hardware requires, warn and offer to upgrade in place (not just skip)
 - [ ] Dynamic logs rotate, not truncate: keep last N attempts as `dynamic_<port>.log.<N>` for postmortem
-- [ ] Watchdog adds exponential backoff: 5 s → 30 s → 2 min → 5 min between restart attempts
+- [x] Watchdog adds exponential backoff: 5 s → 30 s → 2 min → 5 min between restart attempts (implemented as 30 s → 2 min → 10 min then abandon, `agent/agent.py` `_RESTART_BACKOFF_S`; note the auto-restart watchdog itself was subsequently disabled entirely in `9963401`, which also ends the respawn/log-truncate churn)
 - [ ] Watchdog enters "crash-loop detected" state after 3 consecutive failures within 5 min — stops respawning, marks the instance failed at the master via `POST /instances/{port}/failed` (new endpoint), and includes the preserved log tail
 - [ ] `/diagnose` (from `ce12428`) surfaces "this model crashed-looped N times today" so operators can see the pattern in one place
 
 **Workaround until fix lands (Blackwell-specific)**
 - Manually upgrade toolkit: `sudo apt install cuda-toolkit-13-0` (matches the 13.0 driver)
 - If crash persists after upgrade: launch with `--enforce-eager` to skip cudagraph capture (slower but lets the model serve while the real fix is being investigated)
-- Until either workaround is verified, do NOT auto-launch NVFP4 models from the master on Blackwell nodes — manual launches only with full log capture (`./vllm serve ... 2>&1 | tee /tmp/vllm-manual.log`)
+- Until either workaround is verified, do NOT auto-launch NVFP4 models from the master on Blackwell nodes — manual launches only with full log capture (`./vllm serve ... 2>&1 | tee /tmp/vllm-manual.log`) *(pre-07-02 guidance; superseded by the resolution above)*
 
 **Cross-references**
 - Origin context: Death Star re-IP from `10.2.30.28` → `10.2.35.20` (2026-06-05); fresh `node.sh setup` ran the (wrong) `cuda-toolkit-12-8` install
@@ -392,4 +394,4 @@ Small or uncertain items that may not be worth building but are worth rememberin
 
 ---
 
-**Last Updated:** 2026-05-13
+**Last Updated:** 2026-07-17 (CUDA blocker marked resolved; Death Star backends documented)

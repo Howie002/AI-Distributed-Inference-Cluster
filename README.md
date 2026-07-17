@@ -117,7 +117,7 @@ curl http://<gpu-machine>:4000/v1/chat/completions \
 curl http://<gpu-machine>:4000/v1/embeddings \
   -H "Authorization: Bearer none" \
   -H "Content-Type: application/json" \
-  -d '{"model": "text-embedding", "input": "sample text"}'
+  -d '{"model": "nomic-embed-text-v1-5", "input": "sample text"}'
 ```
 
 The vLLM instances are also directly accessible at `http://<gpu-machine>:<port>/v1` — useful for bypassing the proxy during testing.
