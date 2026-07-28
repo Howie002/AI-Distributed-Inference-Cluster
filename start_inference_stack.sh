@@ -1,6 +1,44 @@
 #!/bin/bash
 set -e
 
+# ── DEPRECATED: legacy single-box launcher ───────────────────────────────────
+# This is the ORIGINAL 4x RTX PRO 6000 single-machine path (see "Four Card AI
+# Setup.md"). It is NOT how the cluster runs now, and running it on the master
+# is actively harmful:
+#
+#   * It serves nemotron-nano / nemotron-super / gte-Qwen2 from localhost ports
+#     8001/8003/8004/8011. Those are not the fleet's models — the live ones are
+#     gemma-4-26b-a4b-nvfp4 and nomic-embed-text-v1-5, served from the GPU
+#     boxes (10.2.35.20 / 10.2.35.30), never from aivm.
+#   * It starts LiteLLM on :4000 from the stale repo-root litellm_config.yaml,
+#     which points at those dead localhost backends. That either collides with
+#     the real proxy or replaces it with one advertising models that do not
+#     exist, breaking every LLM-dependent tool in a confusing way.
+#
+# The live path is `bash boot.sh` (control agent, then an agent-generated proxy
+# config) or `./node.sh start`. The proxy's real config is
+# litellm/cluster_config.yaml, written only by the control agent from live
+# cluster instance discovery.
+#
+# Kept for reference/history. Set VLLM_LEGACY_STACK=1 to run it anyway.
+if [ "${VLLM_LEGACY_STACK:-0}" != "1" ]; then
+    cat >&2 <<'DEPRECATED'
+REFUSING TO RUN: start_inference_stack.sh is the deprecated single-box launcher.
+
+It would start LiteLLM on :4000 from the stale repo-root litellm_config.yaml,
+which routes to nemotron models on localhost that this deployment does not run.
+That breaks LLM inference for the whole tool fleet.
+
+  Correct bring-up on this node:  bash boot.sh
+  (or)                            ./node.sh start
+  Live proxy config:              litellm/cluster_config.yaml  (agent-generated)
+
+If you really do want the legacy single-box stack:
+  VLLM_LEGACY_STACK=1 ./start_inference_stack.sh
+DEPRECATED
+    exit 1
+fi
+
 # Ensure CUDA toolkit binaries are in PATH
 for CUDA_BIN in /usr/local/cuda/bin /usr/local/cuda-12.8/bin /usr/local/cuda-12/bin; do
     [ -d "$CUDA_BIN" ] && export PATH="$CUDA_BIN:$PATH"

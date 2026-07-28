@@ -241,8 +241,14 @@ Double-click `stop.bat` to shut everything down cleanly.
 
 ### From Linux
 
+> **Historical.** This whole document describes the original single-box 4-card
+> setup. `start_inference_stack.sh` now refuses to run without
+> `VLLM_LEGACY_STACK=1`, because on the current master it would start LiteLLM on
+> `:4000` routed to nemotron models that no longer exist and break the tool
+> fleet. Current bring-up is `bash boot.sh` (or `./node.sh start`).
+
 ```bash
-./start_inference_stack.sh   # Start
+./start_inference_stack.sh   # Start (legacy; needs VLLM_LEGACY_STACK=1)
 ./stop_inference_stack.sh    # Stop
 ```
 
@@ -350,7 +356,7 @@ The model uses bidirectional attention for embeddings, but its HuggingFace confi
 | `stop_inference_stack.sh` | Graceful shutdown via PIDs, force-kills anything on known ports |
 | `start.bat` | Windows entry point — GPU monitor window + WSL stack launch |
 | `stop.bat` | Windows stop — calls stop script via WSL |
-| `litellm_config.yaml` | LiteLLM proxy config — model routing, retries, timeouts |
+| `litellm_config.yaml` | **DEPRECATED, emptied** — the live config is the agent-generated `litellm/cluster_config.yaml` |
 | `logs/` | Per-service log files, created at runtime |
 | `.stack_pids` | Runtime PID file, created/deleted automatically by start/stop scripts |
 | `.gitignore` | Excludes logs, PIDs, venv references |

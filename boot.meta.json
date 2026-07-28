@@ -1,0 +1,13 @@
+{
+  "key": "llm-proxy",
+  "name": "Cluster LLM control plane (agent :5000 + LiteLLM proxy :4000)",
+  "command": "bash boot.sh",
+  "port": 4000,
+  "extra_ports": [
+    5000
+  ],
+  "health": "http://localhost:4000/v1/models",
+  "priority": 1,
+  "depends_on": [],
+  "note": "Master node's control plane. boot.sh starts the control agent, then has it regenerate litellm/cluster_config.yaml from the instances live across the cluster and (re)start the proxy. Six tools already declare depends_on:[\"llm-proxy\"] — this file is the entry that makes that dependency real; without it topo_order treated the dep as satisfied and nothing ever started the proxy, so an aivm reboot silently took LLM inference down fleet-wide. Model backends live on the GPU boxes (10.2.35.20 / 10.2.35.30) and are never started from aivm; boot-config.json verifies one as a precondition. Do NOT use start_inference_stack.sh (deprecated legacy single-box path)."
+}
