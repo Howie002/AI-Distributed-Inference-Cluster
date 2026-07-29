@@ -1,11 +1,16 @@
 # AI Distributed Inference Cluster - Project Instructions
 
+> *Reconciled 2026-07-29 (SB↔repo): the vault copy is canonical. Where both sides had drifted in the same section, the older repo wording was superseded — it remains intact in the repo's git history at the pre-reconciliation commit.*
+
 ## What This Project Is
 Enduring infrastructure project tracking the build-out, migration, maintenance, and evolution of Foundation's on-premises AI inference cluster - VM environment, DGX Spark nodes, and supporting services. *(Renamed 2026-04-29 from "Foundation AI Infrastructure".)*
 
 ## Second Brain Location
-`/Users/andrewhowerton/Documents/Second Brain/3. Planning/6. Work Projects/0. Active Priority/AI Distributed Inference Cluster/`
+`/home/aivmadmin/Documents/Second Brain/3. Planning/7. Work Projects/3. Maintain/AI Distributed Inference Cluster/`
 Sync all session updates back here before closing.
+
+> `/Users/andrewhowerton/Documents/Second Brain/3. Planning/6. Work Projects/0. Active Priority/AI Distributed Inference Cluster/`
+> Sync all session updates back here before closing.
 
 ## Session Protocol
 
@@ -37,3 +42,4 @@ Before this session closes, write back:
 - Proxmox dashboard (VM management)
 - DGX Spark management UI
 - Foundation network infrastructure documentation
+

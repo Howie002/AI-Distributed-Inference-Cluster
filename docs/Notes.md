@@ -1,5 +1,227 @@
 # AI Distributed Inference Cluster - Notes
 
+## 2026-07-22 - Proposal to expose the proxy externally to Salesforce IP ranges
+
+Andrew proposed (email to Cody Nerren + Steve Catlin, cc Drew East) securely exposing this cluster's LiteLLM proxy (`10.2.35.10:4000/v1`) to Salesforce's common IP ranges, so Cortex workflows can offload expensive inference to local compute. New project: [[../../0. Active Priority/Local Stack Access (AI Endpoint)/Notes|Local Stack Access (AI Endpoint)]]. No changes made to this cluster yet - proposal stage only, awaiting IT/security discussion.
+
+## 2026-07-17 - Moved to Maintain
+
+Project moved from Active Priority to Maintain as part of a broader portfolio reorganization pass - cluster is operational and serving the fleet; additional capability gets added as needed rather than under active build. No technical work done on this project today.
+
+## 2026-07-16 — Voicebox: durability flag PASSED; Chatterbox Turbo + Whisper Turbo added; GPU concurrency profiled
+
+- **Yesterday's durability flag: PASSED for normal operation.** Voicebox came up healthy this morning (~18h after the fixes) with both Qwen models loaded and profiles intact — the container fixes survived. The bake-into-image ask stands only for the full-rebuild/reboot case (unchanged from yesterday's wording).
+- **Two models added from the aivm via the API** (disk fine post-cleanup): `chatterbox-turbo` (3.8 GB — zero-shot cloning engine, now the workhorse: ~3× faster than base qwen per generation, ~1.5–2s/sentence; rejects reference clips ≤5s) and `whisper-turbo` (STT for the capture API — powers the dashboard clone card's mic auto-transcription). Note: non-Qwen engines lazy-load on first generation; `/models/load` is Qwen-only.
+- **GPU concurrency profiled** (chatterbox_turbo, same sentence, through the Coach service path): solo ≈ 2.0s; 2 concurrent ≈ 2.7–3.1s each (GPU overlaps two well); 3 concurrent ≈ 6.1–6.4s each, all finishing together (time-slicing, not FIFO — unlike the async `/generate` queue for qwen, which is serial FIFO). `/generate/stream` returns the complete WAV at generation end, not progressively.
+- **Consumers now: HyperFrames narration + Foundation Coach live voice + dashboard panel tests** — all sharing the one GPU. Contention is real (an HF render's TTS phase slows a live Coach session); if simultaneous demand grows, the options are a second GPU worker or the 0.6B Chatterbox model.
+- **API quirks catalogued today** (also in the dashboard/HF notes): `GET /profiles/{id}` always reports `sample_count: 0` (LIST + `/samples` are truthful); a `/generate` request that omits `engine` does NOT fall back to the profile's default engine — the API default (base qwen) silently wins, so every consumer must pass engine explicitly.
+
+## 2026-07-15 — Voicebox Qwen TTS unblocked (disk, torchaudio, Triton) and live
+
+Voicebox (Death Star `10.2.35.20:17600`) went from "loads nothing usable" to serving Qwen TTS end-to-end today. Three stacked, distinct blockers, each diagnosed from the aivm (which has NO SSH to the Death Star - key rejected, password auth for `admin`/`aivmadmin` also rejected) and fixed by Andrew on the box after a handoff recipe:
+
+1. **Disk full.** `GET /health/filesystem` reported ~36 MB free of 952 GB (`healthy:false`); nothing could download. Andrew freed it to ~292 GB.
+2. **torch/torchaudio CUDA mismatch.** Qwen model downloads errored: "PyTorch has CUDA version 13.0 whereas TorchAudio has CUDA version 12.8." Qwen imports torchaudio; Kokoro does not (why Kokoro alone had worked). Fixed so both Qwen models now download + load (`qwen-tts-1.7B`, `qwen-custom-voice-1.7B`).
+3. **Triton "Failed to find C compiler."** After the models loaded, generation still failed: Qwen JIT-compiles Triton kernels on first inference and the container had no `gcc`. Reproduced via both HyperFrames `tts.py` and a direct `/generate`. Andrew installed a compiler in the container; Qwen generation now returns audio.
+
+Cleanup done from the aivm side via the Voicebox API: dismissed the two errored Qwen download tasks (`/models/download/cancel`) so `/tasks/active` was clean before the retries.
+
+**Live now (HTTP-verified):** `qwen-tts-1.7B` + `qwen-custom-voice-1.7B` both loaded; a real HyperFrames narration preview produced valid 24 kHz audio through the deployed proxy. Voice model in use for narration is `qwen_custom_voice` (Ryan preset). Managed from the new dashboard `/admin/voicebox` panel; consumed by HyperFrames narration (see [[../HyperFrames Education Generator/Notes]] 07-15, [[project_hyperframes_voicebox_narration]]).
+
+**DURABILITY FLAG (Cody / Andrew):** if the three container fixes (disk cleanup aside) - the torchaudio-matching-torch install and the `gcc`/`build-essential` install - were applied to the running container rather than baked into the `~/voicebox` Dockerfile (its `cuda` build branch), a container rebuild or restart could regress them and silently break Qwen TTS. Confirm they persist across a Voicebox restart; fold `build-essential` + a cu130-matching torchaudio into the image if not.
+
+## 2026-07-14 — VM confirmed reachable to Voicebox; management-interface idea; dev branch reconciled
+
+**Voicebox reachability confirmed:** Dominic verified the VM (10.2.35.10) can reach the Death Star's Voicebox endpoint (`10.2.35.20:17600/health` → healthy, RTX PRO 6000 Blackwell GPU visible, no model loaded yet). Voice testing planned for tomorrow (2026-07-15), then integration into HyperFrames.
+
+**New idea (Andrew):** the Foundation's current text-to-speech consumers are Foundation Coach and HyperFrames. Rather than requiring Death Star SSH access every time a voice/profile needs customizing, build a lightweight management interface on the VM that proxies to the Voicebox endpoint - giving both consuming apps (and future ones) a way to configure voices/profiles without touching the Death Star directly. Not started; captured as a real idea worth roadmapping.
+
+**`dev` branch reconciled:** config snapshot committed+pushed to `main` (`cbffaf3`; Death Star `:8021` gemma confirmed out of pool/connection-refused, `:8023` + `10.2.35.30:8020` still serving); local `dev` fast-forwarded 18 commits to `origin/dev`. Closes the long-carried "GitHub ahead of local" Master To Do item.
+
+---
+
+## 2026-07-14 (Tuesday) — `dev` branch reconciled; Death Star `:8021` gemma instance confirmed down
+
+**Config snapshot committed** (`cbffaf3` on `main`): the control agent's generated `litellm/cluster_config.yaml` had an uncommitted local diff dropping the Death Star `:8021` gemma instance — confirmed genuinely down (connection refused) before committing, not just diffing. `:8023` and `10.2.35.30:8020` remain in the chat pool, so the cluster is running two gemma endpoints instead of three; worth knowing if latency creeps up under load.
+
+**`dev` branch reconciliation:** local `dev` was 18 commits behind `origin/dev` with no local divergence — fast-forwarded clean (`f22011c` now the tip). Closes the Master To Do item that had been carried since 07-13.
+
+**Also:** renamed a doc-comment referencing "Tetrix" (timeout-rationale note in `agent/agent.py`) to "Providence" following that repo's rename today — cosmetic, no behavior change. Commit `f22011c`.
+
+**Voicebox check (Investments/adjacent to this repo, not this repo itself):** `10.2.35.20:17600/health` reachable and healthy, CUDA GPU visible, `model_loaded: false` — production voice/engine selection still pending, not this repo's decision to make.
+
+---
+
+## 2026-07-08 (PM) — ✅ Voicebox LIVE on Death Star GPU (sm120 solved), LAN-reachable
+
+**Status: WORKING end-to-end.** Voicebox is deployed headless on the Death Star, running on the Blackwell GPU, reachable from the LAN, and reboot-persistent. Real 24 kHz WAV synthesized via `/speak`. This is the win the Higgs saga never reached.
+
+**The sm120 problem that killed Higgs is solved by the toolchain, not a patch.** Inside the container: `torch 2.13.0+cu130` (resolved to CUDA 13, newer than the cu128 I targeted), `cuda.is_available()=True`, device = RTX PRO 6000 Blackwell, capability `(12,0)`, and **`sm_120` is in `torch.cuda.get_arch_list()`**. Higgs died precisely because its torch had no sm120 kernels; this build ships them. `/health` reports `backend_variant: cuda`, `gpu_compatibility_warning: null` (the backend's `check_cuda_compatibility()` gives it a clean bill — no CPU fallback).
+
+**How it's wired:**
+- Image built from `~/voicebox` with a **`cuda` build branch added to the Dockerfile** (installs torch/torchaudio from the cu128 wheel index; pip resolved cu130) — mirrors the stock ROCm branch. NVIDIA overlay `docker-compose.nvidia.yml` pins **physical GPU 0** (`device_ids:["0"]`, gemma is on GPU 3) with a 24 G mem limit.
+- Host prereqs done: `nvidia-container-toolkit` installed + `nvidia-ctk runtime configure` + `systemctl restart docker` → `nvidia` runtime registered.
+- Port published **`0.0.0.0:17600:17493`** → VM webapps hit **`http://10.2.35.20:17600/speak`** directly (custom API, NOT OpenAI `/v1/audio/speech`, so it does NOT route through the LiteLLM proxy — by design).
+- **Ownership fix baked into the entrypoint** (`scripts/rocm-entrypoint.sh`): Docker creates the HF-cache volume + `output/` bind-mount root-owned, but the app runs as `voicebox` (uid 999) → model download hit `EACCES`. Entrypoint now chowns `/home/voicebox/.cache` + `/app/data(/generations)` and pre-creates the torch JIT-kernel cache dir on every boot (idempotent, self-healing). Verified cold-start works with no manual chown.
+
+**Boot persistence:** container `restart: unless-stopped` + `docker.service` enabled → survives crash and host reboot with no human in the loop.
+
+**Ops (dir `~/voicebox`):** `bash start_voicebox.sh` (up + polls `/health`, prints LAN URL) / `bash stop_voicebox.sh` (down, keeps data volumes). Model cache + profiles/DB persist in named volumes across restarts/rebuilds.
+
+**Engines/voices:** 7 engines available (qwen, qwen_custom_voice, luxtts, chatterbox, chatterbox_turbo, tada, kokoro). A `/speak` call needs a **voice profile** first — created a Kokoro preset profile `Coach-Michael` (`am_michael`, id `80ad109b-497e-45d0-b5a3-56cece634e90`) via `POST /profiles` `{voice_type:"preset", preset_engine:"kokoro", preset_voice_id:"am_michael"}`. `/speak` is **async**: returns `status:"generating"`, writes the `.wav` to `output/<gen-id>.wav` a few seconds later. Kokoro presets list at `GET /profiles/presets/kokoro`.
+
+**Next:** point the VM webapp(s) at `http://10.2.35.20:17600/speak` (create/choose a profile per voice); optionally evaluate the heavier engines (Qwen3-TTS quality, Chatterbox cloning) now that the GPU path is proven.
+
+---
+
+## 2026-07-08 — Higgs Audio ABANDONED (dead end); pivot to Voicebox headless TTS
+
+**Decision (Andrew):** Stop pursuing Higgs Audio V3 — it was a dead end (the sm120 driver/fault-buffer saga + zero-shot-only voices never justified the effort). **Pivoting to [Voicebox](https://voicebox.sh)** — an open-source, local-first, API-first voice studio (7 TTS engines incl. Kokoro/Qwen3-TTS/LuxTTS, plus Whisper STT + voice cloning; REST `/speak` + `/transcribe` and a built-in MCP server).
+
+**Target architecture (same pattern as before):** install Voicebox **headless on the Death Star** (`10.2.35.20`) via its **Docker image** (`uvicorn backend.main:app --host 0.0.0.0 --port 17493`, health `/health`) → expose on the LAN → VM webapps call `http://10.2.35.20:<port>/speak`. NOT the Tauri desktop build (that needs a display + webkit deps — wrong for a headless server). Note: `/speak` is a **custom** API, not OpenAI `/v1/audio/speech`, so it does NOT route through the LiteLLM proxy — webapps hit it directly.
+
+**Feasibility notes captured today:**
+- Disk was the blocker (13 GB free, `/` 99%). Reclaiming the **19 GB dead-end Higgs install** (`/home/admin/higgs-audio`) frees enough for the build.
+- Docker present, but **no nvidia-container-toolkit** and Voicebox ships only CPU + ROCm compose (no NVIDIA overlay). **POC plan: CPU-only** (Kokoro 82M / LuxTTS "150x realtime on CPU") — sidesteps the sm120 CUDA compatibility risk that sank Higgs. GPU accel is a later, optional step.
+- Compose default binds `127.0.0.1:17600:17493` — must change to `0.0.0.0` (or the LAN IP) so the VM can reach it.
+
+**Other status per Andrew:** watchdog stays **disabled** for now (no re-enable work). The pending `dev`→live vLLM deploy is **demoted to non-critical** (roadmap, not urgent).
+
+---
+
+## 2026-07-02 — Router timeout 30s→150s + Death Star back in the pool
+
+**Router timeout raised** (`agent/agent.py` `router_settings.timeout`, commit `1056f98`; config snapshot `1c3f664`). The 30s router timeout 408'd legitimate long non-streaming generations — Tetrix document extraction runs 25-45s, HR synthesis 80-120s — and `num_retries: 3` × 30s wedged callers for minutes (surfaced as three Tetrix docs stuck 'processing'; diagnosis trail in the Tetrix ROADMAP 07-02 entry). Now 150s, keeping the defensive-timeout cascade ordered: **NGINX 180 > tool clients ~170 > router 150 > vLLM**. Streaming paths (Coach voice, Chat) unaffected in feel — total-request cap, not time-to-first-token. Deployed via the standard procedure: commit → restart master agent (:5000) → `POST /proxy/sync`; chat + embeddings verified immediately after.
+
+**Death Star is back.** Verified live: nvfp4 gemma serving on `10.2.35.20:8021` AND `:8023` (both in the proxy's least-busy gemma pool alongside `10.2.35.30:8020`), nomic embeddings on `:8022` — no crash-loop, so the CUDA blocker is resolved (Cody's upgrade evidently landed). Embedder health verified with a sustained loop (20/20 single embeds @ ~30ms avg + batch-array). **Downstream unblocks:** Deep Research live runs (first live run still needs a verification pass) and the R&FI 3,600-researcher briefing batch (awaiting Andrew's go — it occupies the LLM for hours).
+
+
+## 2026-07-01 — Auto-restart watchdog DISABLED (was causing self-inflicted crash-loops)
+
+**Action:** Turned off the per-node instance watchdog. Committed on `dev` (`9963401`) — the thread-start in `_on_startup` is commented out; `_instance_watchdog_loop`/`_instance_watchdog_tick` are preserved for future work. Applied live on the Death Star via `POST /agent/restart` (no sudo); confirmed the thrash stopped (GPU 1 held steady, no relaunch over 80s).
+
+**Why:** The watchdog was doing more harm than good on this cluster. Root cause of the crash-looping:
+- `_scan_vllm_instances()` depends on `psutil.net_connections()`, which **intermittently returns empty** on this box (same flakiness that made `/instances` blank and broke the first GPU-label attempt).
+- When a scan tick flakes, the watchdog thinks healthy instances are "missing" → relaunches them → `launch_instance`'s **VRAM reclaim kills the healthy copy** → self-inflicted crash-loop. Made permanent by the earlier keep-retrying change (`e30544a`).
+- Observed thrashing **gemma `:8020`** (local copy) and the 196K **`:8021`** indefinitely. Also the `localhost`/IPv6 health-check failure compounds it (vLLM binds IPv4; `localhost` → `::1`).
+
+**Consequence:** Instances no longer auto-relaunch if they die — a manual relaunch (or agent restart with the watchdog re-enabled) is needed until the root cause is fixed. Acceptable for now; the false-relaunch thrash was worse than no auto-restart.
+
+**Re-enable criteria (see Roadmap):** (a) make the instance scan robust / not solely `net_connections`-dependent; (b) reclaim must never kill a healthy co-located/same instance; (c) fix the `localhost` health check to use `127.0.0.1`. Then uncomment the two lines in `_on_startup`.
+
+**Cluster state after:** agent + dashboard up (systemd), nomic `:8022` healthy and serving (768-dim, direct + via proxy), gemma served cluster-wide via the Nano's copy through the proxy. The Death Star's local gemma `:8020` is intentionally down (redundant; was the thrash victim).
+
+---
+
+## 2026-06-30 — Infrastructure Stability: Both Nodes UPS Protected, Cold-Reboot Verified
+
+Both the Master VM (10.2.35.10) and Death Star (10.2.35.20) are now on UPS power. Both nodes verified to come back up cleanly after a reboot and restore proxy inference without manual intervention. This closes the cold-reboot verification concern that had been open since June 24.
+
+The NVRM shadow fault buffer issue that blocked Higgs Audio V3 first inference was tied to 5-day uptime under memory pressure. With UPS in place, controlled reboots can be done on demand without power-loss risk, removing the primary source of driver state accumulation.
+
+---
+
+## 2026-06-29 (PM) — Higgs Audio V3 Deploy on Death Star: Full Stack Working, Blocked on Driver Fault-Buffer
+
+**Status:** Software stack 100% configured and verified. Blocked on a driver-level GPU memory allocation failure. Rebooting the box to retry on clean driver state (in progress at end of session).
+
+**Goal of the session:** Actually deploy Higgs Audio TTS V3 on the Death Star (`10.2.35.20`, GPU 1 — GPU 0 reserved for training) and produce a first `.wav` (proof of concept). The model is **`bosonai/higgs-tts-3-4b`** (4B Qwen3 backbone + audio codec), served via **SGLang-Omni** (the official Boson AI self-host path; the old `boson-ai/higgs-audio` repo is V2 only).
+
+### What got built / installed (all on the Death Star)
+- **SGLang-Omni** installed manually into `/home/admin/higgs-audio/venv` (uv venv, py3.12). Docs recommend Docker but disk was too tight; manual install works.
+- **Model** downloaded to `/home/admin/higgs-audio/model` (9.3 GB, public, no HF auth needed).
+- **`/home/admin/higgs-audio/start_higgs.sh`** — complete launcher with all required env (see below).
+- **`/home/admin/higgs-audio/higgs_poc.yaml`** — pipeline config with the tts_engine server_args_overrides that are required on sm120.
+- API is **OpenAI-compatible** (`POST /v1/audio/speech`) — confirmed. So once serving, it's a drop-in for the proxy + Coach (no custom Pipecat wrapper needed). **Note: V3 is zero-shot — no preset named voices like Kokoro; voice cloning is via reference audio clip.** This changes the Coach voice-picker design (decide later: hide picker, or use reference-clip "characters").
+
+### The sm120 (RTX PRO 6000 Blackwell) gauntlet — all REAL, all required
+Took a long debugging chain. The opaque `-9 SIGKILL` crashes (no traceback) masked a series of plain toolchain errors. **`CUDA_LAUNCH_BLOCKING=1` is the key** — it converts the async crash into a readable Python error. Root causes, in order found:
+1. **CUDA 12.8 can't target sm120** — needs ≥ 12.9. Installed `cuda-nvcc-13-0` + `cuda-libraries-dev-13-0` (the latter for `cublasLt.h` and other math-lib dev headers). `/usr/local/cuda-13.0`.
+2. **FlashInfer's `is_cuda_version_at_least("12.9")` is buggy for CUDA 13.0** → workaround `FLASHINFER_CUDA_ARCH_LIST="12.0f"`.
+3. **No prebuilt sm120 cubins** → FlashInfer JIT-compiles kernels on first request via **ninja** (must be on PATH — prepend `venv/bin`) + nvcc-13.
+4. **Acoustic-encoder `torch.compile` + warmup crash on sm120** → patched `sglang_omni/models/higgs_tts/stages.py` to skip both, gated by `HIGGS_DISABLE_ACOUSTIC_COMPILE=1`.
+5. Pipeline config needs: `disable_cuda_graph: true`, `disable_flashinfer_autotune: true`, `attention_backend: triton`, `sampling_backend: pytorch`, `mem_fraction_static: 0.50`.
+
+**After all fixes: server starts clean, all 4 stages load, kernels compile.** Verified the model loads (7.6 GB), KV cache allocates, Uvicorn serves on `:8881`.
+
+### The remaining blocker (THE thing to solve next)
+First inference dies with NVRM **`NV_ERR_NO_MEMORY` allocating system memory for the GPU shadow fault buffer** (`_kgmmuClientShadowFaultBufferPagesAllocate`). Confirmed via `sudo dmesg`. **Not a code, config, RAM, or sm120-compute problem** — it failed even with 21 GB free RAM, drained swap, and an empty GPU. vLLM/gemma run fine on the same box (they use plain `cudaMalloc`; sglang-omni uses a GPU-fault-based memory path that needs the shadow fault buffer, which the driver refuses to allocate). Box had 5-day uptime under heavy memory pressure. **Hypothesis: stale driver memory state → reboot should clear it.** Bringing Higgs up FIRST on a fresh boot (before cluster/training reclaim resources) is the test.
+
+### The verified launch command (post-reboot)
+```bash
+bash /home/admin/higgs-audio/start_higgs.sh
+# env baked in: MAX_JOBS=1, PATH=venv/bin:cuda-13.0/bin, CUDA_VISIBLE_DEVICES=1,
+# HIGGS_DISABLE_ACOUSTIC_COMPILE=1, FLASHINFER_CUDA_ARCH_LIST=12.0f, CUDA_HOME=/usr/local/cuda-13.0
+```
+First request JIT-compiles (~1-3 min, cached after). `file ~/higgs_test.wav` → `WAVE audio` = POC achieved.
+
+**Full reproduction + gotchas saved to auto-memory `higgs-audio-sm120-serving`.** If clean-boot retry still hits the fault-buffer error, it's a genuine driver/Blackwell bug → defer to the real Death Star hardware (~2 weeks); the proxy + Coach integration is already staged on the `dev` branches (see entry below).
+
+---
+
+## 2026-06-29 — Model Evaluation: Minimax 2.7 on Dual RTX Pro 6000 Blackwell
+
+**Test:** Minimax 2.7 running across two RTX Pro 6000 Blackwell GPUs on the Death Star
+**Tool:** Continue extension (VS Code) as the AI agent coding interface
+
+### Results
+
+**Throughput:** ~80 tokens/second across both GPUs. Strong decode performance for a model of this size.
+
+**Code quality:** Very good. Comparable to Claude Code for agentic coding tasks. Genuinely competitive for most coding workflows when used with the Continue extension.
+
+**Limitations:**
+- Slow prompt processing (prefill / time-to-first-token is sluggish; noticeable on long inputs)
+- Context window under 200K tokens; cramped during longer Second Brain sessions and extended coding tasks where full context is needed
+
+### Verdict
+
+Minimax 2.7 is a credible local alternative to Claude Code for standard coding tasks. The throughput is good enough for interactive use. However, the slow prompt processing and sub-200K context window make it a poor fit for the Second Brain management workflows and for long-running coding sessions where full context matters. Better suited to contained, shorter coding tasks where the context limit is not a binding constraint.
+
+**Follow-on:** The two DGX Spark nodes (GB10, 128GB each) are already on the network and pending naming. Revisit Minimax 2.7 or a larger context window variant once they are fully integrated into the cluster routing — more combined VRAM may resolve the prompt processing bottleneck. Continue extension integration is confirmed working as the agent coding interface.
+
+---
+
+## 2026-06-29 — Higgs Audio TTS V3: Modular Proxy Architecture (Dev Branches Shipped)
+
+**Status:** Dev branches ready. Deployment pending on Death Star + Master VM (other computer).
+**Repos:** `AI-Distributed-Inference-Cluster` @ `dev` commit `e03ce50`, `Foundation-Coach` @ `dev` commit `bfb7253`
+
+### What shipped on `dev` today
+
+**Cluster repo — modular static model overlay:**
+- `litellm/static_models.yaml` (new) — non-vLLM model declarations that survive every agent-generated rewrite of `cluster_config.yaml`. Higgs Audio entry uses `$HIGGS_AUDIO_HOST` env var.
+- `agent/agent.py` — `_proxy_write_and_restart` now reads `static_models.yaml` and merges entries after building the vLLM list. Env vars expanded at write time; unexpanded entries skipped silently.
+- `litellm/start_proxy.sh` — sources `litellm/.env` before starting so `HIGGS_AUDIO_HOST` is available.
+- `litellm/.env.example` — documents audio host vars; copy to `litellm/.env`.
+- `scripts/install_higgs_audio.sh` — idempotent install script: clones repo, builds venv, generates `start_server.sh`/`stop_server.sh`, prints systemd template + the `litellm/.env` line.
+
+**Foundation Coach repo — provider-aware TTS:**
+- `TTS_PROVIDER` env var (`kokoro`|`higgs-audio`), dynamic VALID_VOICES, `TTS_BASE_URL` default → proxy (`:4000`), voice picker switches per provider, `HIGGS_AUDIO_VOICES` placeholder array.
+
+### Hardware swap path (when Death Star demo is replaced — ~2 weeks)
+```
+1. New node:   bash scripts/install_higgs_audio.sh
+2. Master VM:  edit litellm/.env → HIGGS_AUDIO_HOST=http://<new-ip>:8881
+3.             bash litellm/stop_proxy.sh && bash litellm/start_proxy.sh
+Foundation Coach: zero changes — calls the proxy, not the node directly.
+```
+
+### Still pending (Death Star access needed)
+- [ ] Pull `dev` to Master VM + Death Star
+- [ ] Run `scripts/install_higgs_audio.sh` on Death Star — confirm `HIGGS_AUDIO_REPO` URL + `START_CMD` entrypoint in generated `start_server.sh`
+- [ ] Create `litellm/.env` on Master VM: `HIGGS_AUDIO_HOST=http://10.2.35.20:8881`
+- [ ] Restart proxy → verify `higgs-audio-tts` in `GET /v1/models`
+- [ ] **Verify API format:** OpenAI-compatible `/v1/audio/speech`? If custom, write thin Pipecat wrapper
+- [ ] **Benchmark latency:** first-chunk vs. Kokoro — must be ≤ for real-time voice
+- [ ] **Get voice IDs** → fill `HIGGS_AUDIO_VOICES` in `prospect.ts` + `TTS_VOICES` in `backend/.env`
+- [ ] **Speed param:** confirm `speed` support; if not, set `NEXT_PUBLIC_TTS_SPEED_SUPPORTED=false`
+- [ ] Live voice test end-to-end via `bash boot.sh`
+
+**Filed from:** Quick Note `2026-06-26-higgs-audio-tts-v3-integration`
+
+---
+
 ## 2026-06-30 — VM Inference Proxy Update: bare `/v1/embeddings` fixed (encoding_format pinned in the generator)
 
 Resolved Andrew's Planner card **"VM Inference Proxy Update"** — cluster embeddings weren't working through the LiteLLM proxy. Bare `POST /v1/embeddings` to `:4000` returned **HTTP 400** because LiteLLM (v1.83.14) injects `encoding_format=None`, which vLLM rejects (`Input should be 'float','base64','bytes' or 'bytes_only'`, input=`None`).
@@ -24,9 +246,94 @@ Resolved Andrew's Planner card **"VM Inference Proxy Update"** — cluster embed
 - gemma chat on `:4000` still healthy.
 - Downstream consumer **R&FI's ChromaDB RAG** (the main embeddings consumer) is now unblocked.
 
-**Docs:** added `docs/UsingTheProxy.md` as the single consumer-facing reference for the `:4000` proxy.
+**Docs:** added `docs/UsingTheProxy.md` to the repo as the single consumer-facing reference for the `:4000` proxy.
 
 **Operational note worth recording:** the aivm cluster agent runs as a plain background process (`.agent_pid`), **NOT under systemd** — it will not auto-restart on reboot.
+
+---
+
+> **Variant preserved from the repo mirror at reconciliation (2026-07-29)** — same-titled section drifted on both sides; the mirror's wording carried detail the vault copy lacked:
+
+> Resolved Andrew's Planner card **"VM Inference Proxy Update"** — cluster embeddings weren't working through the LiteLLM proxy. Bare `POST /v1/embeddings` to `:4000` returned **HTTP 400** because LiteLLM (v1.83.14) injects `encoding_format=None`, which vLLM rejects (`Input should be 'float','base64','bytes' or 'bytes_only'`, input=`None`).
+> **The initial "proxy is just a couple updates behind" assumption was wrong.** The global `litellm_settings: drop_params: true` is already in the live config and does **not** fix this. Verified by standing up a fresh shadow litellm on `:4001` with the exact live config — it still 400'd. So a process restart/update alone was a no-op for embeddings.
+> **Root cause / topology confirmed:**
+> - aivm (`10.2.35.10`) is the cluster **master** node (role in `node_config.json`; control agent on `:5000`).
+> - The live `litellm/cluster_config.yaml` is **auto-generated by the control agent** (`agent/agent.py`) and is marked "do not edit by hand."
+> - The aivm repo was already current on `main` (0 behind). The running agent process was stale (started Jun 05) but the current code generated a **byte-identical** config — so restarting the agent alone changed nothing for embeddings.
+> - Proxy routes: chat `gemma-4-26b-a4b-nvfp4` → `10.2.35.30:8020`; embeddings `nomic-embed-text-v1-5` → Death Star `10.2.35.20:8022`. Embedding model max context = **2048**.
+> **The fix (commit `1efb987` on `main`, pushed):** patched the generator `agent/agent.py` (~line 466, in `_proxy_write_and_restart`) to append `encoding_format: float` to the `litellm_params` of embedding models — detected via `if "embed" in served_name.lower()`. This pins the value so bare calls carry it.
+> **Deploy steps:**
+> 1. Commit + push the `agent.py` change.
+> 2. Restart the master control agent: `agent/stop_agent.sh` then `agent/start_agent.sh` (loads the new generator code; agent on `:5000`).
+> 3. `POST http://127.0.0.1:5000/proxy/sync` → regenerates `cluster_config.yaml` (now with `encoding_format: float` on the embed model) and bounces the `:4000` proxy (a few-second chat blip; the old orphaned proxy pid was replaced cleanly).
+> **Verification:**
+> - Bare `/v1/embeddings` on `:4000` now returns a **768-dim vector** — no caller workaround needed.
+> - gemma chat on `:4000` still healthy.
+> - Downstream consumer **R&FI's ChromaDB RAG** (the main embeddings consumer) is now unblocked.
+> **Docs:** added `docs/UsingTheProxy.md` as the single consumer-facing reference for the `:4000` proxy.
+> **Operational note worth recording:** the aivm cluster agent runs as a plain background process (`.agent_pid`), **NOT under systemd** — it will not auto-restart on reboot.
+> ---
+
+## 2026-06-29 — Model Evaluation: Minimax 2.7 on Dual RTX Pro 6000 Blackwell
+
+**Test:** Minimax 2.7 running across two RTX Pro 6000 Blackwell GPUs on the Death Star
+**Tool:** Continue extension (VS Code) as the AI agent coding interface
+
+### Results
+
+**Throughput:** ~80 tokens/second across both GPUs. Strong decode performance for a model of this size.
+
+**Code quality:** Very good. Comparable to Claude Code for agentic coding tasks. Genuinely competitive for most coding workflows when used with the Continue extension.
+
+**Limitations:**
+- Slow prompt processing (prefill / time-to-first-token is sluggish; noticeable on long inputs)
+- Context window under 200K tokens; cramped during longer Second Brain sessions and extended coding tasks where full context is needed
+
+### Verdict
+
+Minimax 2.7 is a credible local alternative to Claude Code for standard coding tasks. The throughput is good enough for interactive use. However, the slow prompt processing and sub-200K context window make it a poor fit for the Second Brain management workflows and for long-running coding sessions where full context matters. Better suited to contained, shorter coding tasks where the context limit is not a binding constraint.
+
+**Follow-on:** The two DGX Spark nodes (GB10, 128GB each) are already on the network and pending naming. Revisit Minimax 2.7 or a larger context window variant once they are fully integrated into the cluster routing — more combined VRAM may resolve the prompt processing bottleneck. Continue extension integration is confirmed working as the agent coding interface.
+
+---
+
+## 2026-06-29 — Higgs Audio TTS V3: Modular Proxy Architecture (Dev Branches Shipped)
+
+**Status:** Dev branches ready. Deployment pending on Death Star + Master VM (other computer).
+**Repos:** `AI-Distributed-Inference-Cluster` @ `dev` commit `e03ce50`, `Foundation-Coach` @ `dev` commit `bfb7253`
+
+### What shipped on `dev` today
+
+**Cluster repo — modular static model overlay:**
+- `litellm/static_models.yaml` (new) — non-vLLM model declarations that survive every agent-generated rewrite of `cluster_config.yaml`. Higgs Audio entry uses `$HIGGS_AUDIO_HOST` env var.
+- `agent/agent.py` — `_proxy_write_and_restart` now reads `static_models.yaml` and merges entries after building the vLLM list. Env vars expanded at write time; unexpanded entries skipped silently.
+- `litellm/start_proxy.sh` — sources `litellm/.env` before starting so `HIGGS_AUDIO_HOST` is available.
+- `litellm/.env.example` — documents audio host vars; copy to `litellm/.env`.
+- `scripts/install_higgs_audio.sh` — idempotent install script: clones repo, builds venv, generates `start_server.sh`/`stop_server.sh`, prints systemd template + the `litellm/.env` line.
+
+**Foundation Coach repo — provider-aware TTS:**
+- `TTS_PROVIDER` env var (`kokoro`|`higgs-audio`), dynamic VALID_VOICES, `TTS_BASE_URL` default → proxy (`:4000`), voice picker switches per provider, `HIGGS_AUDIO_VOICES` placeholder array.
+
+### Hardware swap path (when Death Star demo is replaced — ~2 weeks)
+```
+1. New node:   bash scripts/install_higgs_audio.sh
+2. Master VM:  edit litellm/.env → HIGGS_AUDIO_HOST=http://<new-ip>:8881
+3.             bash litellm/stop_proxy.sh && bash litellm/start_proxy.sh
+Foundation Coach: zero changes — calls the proxy, not the node directly.
+```
+
+### Still pending (Death Star access needed)
+- [ ] Pull `dev` to Master VM + Death Star
+- [ ] Run `scripts/install_higgs_audio.sh` on Death Star — confirm `HIGGS_AUDIO_REPO` URL + `START_CMD` entrypoint in generated `start_server.sh`
+- [ ] Create `litellm/.env` on Master VM: `HIGGS_AUDIO_HOST=http://10.2.35.20:8881`
+- [ ] Restart proxy → verify `higgs-audio-tts` in `GET /v1/models`
+- [ ] **Verify API format:** OpenAI-compatible `/v1/audio/speech`? If custom, write thin Pipecat wrapper
+- [ ] **Benchmark latency:** first-chunk vs. Kokoro — must be ≤ for real-time voice
+- [ ] **Get voice IDs** → fill `HIGGS_AUDIO_VOICES` in `prospect.ts` + `TTS_VOICES` in `backend/.env`
+- [ ] **Speed param:** confirm `speed` support; if not, set `NEXT_PUBLIC_TTS_SPEED_SUPPORTED=false`
+- [ ] Live voice test end-to-end via `bash boot.sh`
+
+**Filed from:** Quick Note `2026-06-26-higgs-audio-tts-v3-integration`
 
 ---
 
@@ -605,3 +912,7 @@ Windows `start.bat` opens `nvidia-smi` monitor + WSL → `setup.sh` (idempotent)
 ---
 
 **Last Updated:** 2026-04-14
+
+## 2026-07-06 - Filed: 07-01 dev-branch fixes + model-load visibility note
+The 2026-07-01 Quick Note (dev-branch commit log, operational gotchas, open issues, model-load visibility feature spec) moved whole into this project: [Cluster-Fixes-and-Model-Load-Visibility-2026-07-01.md](Cluster-Fixes-and-Model-Load-Visibility-2026-07-01.md). Roadmap backlog updated to point at it.
+

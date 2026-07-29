@@ -1,9 +1,11 @@
 # AI Distributed Inference Cluster
+
+> *Reconciled 2026-07-29 (SB↔repo): the vault copy is canonical. Where both sides had drifted in the same section, the older repo wording was superseded — it remains intact in the repo's git history at the pre-reconciliation commit.*
 *(Renamed 2026-04-29 from "Foundation AI Infrastructure" / repo `vllm-start-point`. Scope unchanged.)*
 
 ## Repository
 - **GitHub:** [Howie002/AI-Distributed-Inference-Cluster](https://github.com/Howie002/AI-Distributed-Inference-Cluster) (private)
-- **GitLab:** [tamfassoc_gitlab/ai/AI-Distributed-Inference-Cluster](https://gitlab.com/tamfassoc_gitlab/ai/AI-Distributed-Inference-Cluster) (private) - *mirrored 2026-05-01; both remotes live during parallel period*
+- **GitLab:** [tamfassoc_gitlab/ai/AI-Distributed-Inference-Cluster](https://gitlab.com/tamfassoc_gitlab/ai/AI-Distributed-Inference-Cluster) (private) - *⚠️ corrected 2026-07-29: the aivm clone has NO GitLab push remote (GitHub-only), like every fleet repo. Dual-remote directive reconciliation flagged to Andrew.*
 - **Branches:** `main` stable, `dev` active (currently equal)
 - **Docs synced to:** `repo/docs/`
 - **Roadmap:** `repo/ROADMAP.md` (mirrors `Roadmap.md` in this folder)
@@ -13,15 +15,30 @@
 Enduring project tracking the build-out, migration, maintenance, and evolution of Foundation's on-premises AI inference cluster. Covers hardware fleet management, v2 architecture migration, dashboard & agent development, future scaling decisions, and ongoing operational health.
 
 ## Status
-**Current Phase:** v2 Cluster - Operational Hardening + Analytics Follow-on
+**Current Phase:** Maintain - cluster operational, serving the fleet; additional capability added as needed rather than under active build
+**Moved to Maintain:** 2026-07-17
 **Started:** 2025
-**Last Updated:** 2026-07-17
+**Last Updated:** 2026-07-08
+
+> **Current Phase:** v2 Cluster - Operational Hardening + Analytics Follow-on
+> **Started:** 2025
+> **Last Updated:** 2026-07-17
 
 ## Current Architecture (v2)
 
 Multi-node GPU cluster managed via the cluster dashboard (`AI-Distributed-Inference-Cluster` repo). Cluster includes master + child nodes, unified GPU view, LiteLLM proxy for model serving, and per-node analytics. DGX Spark unified memory (GB10) fully supported; cross-node deployment works via dashboard. Previous architecture used Docker Compose on a single VM with Nginx-round-robin to Ollama nodes - that pattern has been superseded by the dashboard-managed cluster.
 
 **Reference:** See [Foundation AI Strategic Roadmap.md](../../Foundation AI Strategic Roadmap.md) for full architecture diagram, network topology, and port map.
+
+## Services on the Cluster
+
+### TTS / Voice — Voicebox (live 2026-07-08)
+Text-to-speech + STT + voice cloning is served by **[Voicebox](https://voicebox.sh)** (open-source, local-first voice studio), running **headless in Docker on the Death Star (`10.2.35.20`), GPU 0**. This replaced the abandoned Higgs Audio V3 effort (Higgs hit an unrecoverable sm120 driver/kernel wall; see Notes.md).
+
+- **Endpoint:** `http://10.2.35.20:17600/speak` (TTS), `/transcribe` (STT), plus an MCP server. Consumed **directly** by VM webapps — this is a **custom API, not OpenAI `/v1/audio/speech`**, so it deliberately does **not** route through the LiteLLM proxy.
+- **GPU:** runs on the Blackwell card. The sm120 kernel gap that killed Higgs is resolved by the container's torch (`2.13+cu130`, ships `sm_120` kernels). `/health` reports `backend_variant: cuda`.
+- **Engines:** 7 (kokoro, qwen, qwen_custom_voice, luxtts, chatterbox, chatterbox_turbo, tada). Each `/speak` needs a **voice profile** (`POST /profiles`); `/speak` is **async** (returns `generating`, writes `output/<id>.wav`).
+- **Ops:** `~/voicebox/{start,stop}_voicebox.sh`; reboot-persistent (`restart: unless-stopped` + docker enabled). Deployment detail + API gotchas in Notes.md 2026-07-08 (PM).
 
 ## Hardware Fleet
 
@@ -103,11 +120,21 @@ RTX Pro 6000 Blackwell cards provide substantially more GPU memory than the DGX 
 ## Future Considerations
 - **ZGX Furry** - 750GB+ unified memory, 1T parameter models, training/fine-tuning capability
 - **GPU monitoring dashboard** - inference load tracking across DGX Sparks and future nodes
-- **Foundation Way Coach S2S** - will require additional containers (Whisper, S2S pipeline, Kokoro)
+- **Foundation Way Coach S2S** - Whisper STT + Kokoro TTS now both provided by the Voicebox service (see Services section); remaining need is the S2S orchestration/pipeline
 - **Nginx upstream expansion** - adding nodes is a one-line config change
 
 ---
 
-**Filed Under:** Work Projects > Active Priority
+**Filed Under:** Work Projects > 3. Maintain
 **Created:** 2026-03-05
-**Last Updated:** 2026-07-17
+**Last Updated:** 2026-07-08
+
+> - **ZGX Furry** - 750GB+ unified memory, 1T parameter models, training/fine-tuning capability
+> - **GPU monitoring dashboard** - inference load tracking across DGX Sparks and future nodes
+> - **Foundation Way Coach S2S** - will require additional containers (Whisper, S2S pipeline, Kokoro)
+> - **Nginx upstream expansion** - adding nodes is a one-line config change
+> ---
+> **Filed Under:** Work Projects > Active Priority
+> **Created:** 2026-03-05
+> **Last Updated:** 2026-07-17
+
