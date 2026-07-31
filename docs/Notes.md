@@ -1,5 +1,28 @@
 # AI Distributed Inference Cluster - Notes
 
+## 2026-07-31 - Cluster web dashboard was down ~a month unnoticed; now in the boot path (boot.sh step 3)
+
+Dominic asked why the "vllm cluster webpage" was unreachable. Ground truth: **nothing was listening on :3005** - the dashboard's own log shows its last start on **2026-07-01**; the 07-27 patch reboot is the latest it could have died, and no sweep ever counted it because it was in NEITHER systemd NOR the fleet boot path (this repo's `boot.meta.json` boots only the control plane). Same failure class as foundation-after-hours on 07-29, third instance overall (llm-proxy 07-28, after-hours 07-29, this).
+
+- **Immediate:** started it via `dashboard/start_dashboard.sh` - :3005 answers 200.
+- **Durable:** `boot.sh` gained **step 3** (master/both roles): if :3005 is dead, start the dashboard; idempotent when alive. `boot.meta.json` `extra_ports` now lists 3005. **Kill-tested:** killed the :3005 listener, ran `boot.sh` - agent/proxy fast-pathed as already-healthy, dashboard back in 2s.
+- **Residual gaps, on the record:** (1) the fleet watchdog health-checks only :4000 for this entry, so a SOLO :3005 death goes unnoticed until the next boot.sh run (reboot, patch night, or watchdog recovery of the control plane); (2) the dashboard tile + admin page link to `https://aisandbox.txamfoundation.com/InferenceCluster`, but **no proxy route or basePath exists for that path - it 404s for a signed-in user** and likely always has. Proxying it properly is not just a route row: the app's browser code calls node agents DIRECTLY over the AI VLAN (`http://10.2.35.x:5000`), which an HTTPS page would mixed-content-block - so remote access needs an agent-proxying refactor first. Access today is direct: `http://localhost:3005` on the box (or the box IPs where the client network can reach them).
+
+## 2026-07-30 - Death Star 2 has arrived - IP assigned, onboarding not yet started
+
+**Death Star 2 arrived today.** Assigned IP: **`10.2.35.21`** - the second slot in the big-compute band (`.20-.29`), immediately next to Death Star 1 at `.20`, per the documented function-based IP-banding convention (Foundation Infrastructure `Operations-Runbook.md`, "IP Allocation Convention").
+
+**This is a DHCP reservation, not a static config** - per the same convention, Cody (Foundation IT) needs to add a MAC-keyed reservation for `.21` before the box will actually come up on that address. Not yet done as of this entry.
+
+**Not yet done (real onboarding work, not just a documentation note):**
+- Get the DHCP reservation for `.21` from Cody, keyed to Death Star 2's MAC address
+- Register the node with the cluster's control agent / `node_config.json` (role=`child`, big-compute)
+- Confirm GPU count/model on Death Star 2 (assumed similar to Death Star 1's 4× RTX Pro 6000 Blackwell, but not yet confirmed physically)
+- Add Death Star 2 to the Hardware Fleet table in Overview.md once specs are confirmed (placeholder row added below, marked pending)
+- Decide model/workload placement across Death Star 1 vs. 2 once the second node is live
+
+**Also worth resolving separately:** the vault's HP Z Workstation pilot (identical 4× RTX Pro 6000 Blackwell spec) was never confirmed as a distinct physical unit from Death Star 1 - worth confirming Death Star 2 isn't actually that same pilot unit being reclassified, versus genuinely new hardware.
+
 ## 2026-07-22 - Proposal to expose the proxy externally to Salesforce IP ranges
 
 Andrew proposed (email to Cody Nerren + Steve Catlin, cc Drew East) securely exposing this cluster's LiteLLM proxy (`10.2.35.10:4000/v1`) to Salesforce's common IP ranges, so Cortex workflows can offload expensive inference to local compute. New project: [[../../0. Active Priority/Local Stack Access (AI Endpoint)/Notes|Local Stack Access (AI Endpoint)]]. No changes made to this cluster yet - proposal stage only, awaiting IT/security discussion.

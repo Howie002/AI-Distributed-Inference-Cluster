@@ -118,3 +118,28 @@ fi
 MODELS="$(curl -s -m 8 -H 'Authorization: Bearer none' "$PROXY_HEALTH" 2>/dev/null \
   | python3 -c 'import json,sys; print(",".join(m["id"] for m in json.load(sys.stdin).get("data",[])) or "NONE")' 2>/dev/null)"
 log "proxy up on :${PROXY_PORT} (http $PROXY_CODE) models=${MODELS:-unknown}"
+
+# ── 3. Cluster web dashboard (master/both only) ─────────────────────────────
+# Added 2026-07-31: the dashboard (:3005) was in NEITHER systemd NOR this boot
+# path — same failure class as foundation-after-hours on 07-29 — so the 07-27
+# patch reboot left it down and no sweep counted it (its last log entry was
+# 07-01; found only when a user asked). Folding it in here means the boot
+# orchestrator AND any watchdog recovery of this entry bring it back. Residual
+# gap on the record: the watchdog health-checks only :${PROXY_PORT}, so a solo
+# :3005 death still goes unnoticed until the next boot.sh run.
+DASH_PORT="${DASHBOARD_PORT:-3005}"
+DASH_URL="http://localhost:${DASH_PORT}/"
+if [ "$(code_for "$DASH_URL")" != "000" ]; then
+  log "dashboard already serving on :${DASH_PORT}"
+else
+  log "starting cluster dashboard on :${DASH_PORT} ..."
+  # start_dashboard.sh backgrounds `next start`, writes its own PID file, and
+  # clears a stale one; it exits non-zero only if a LIVE instance already runs.
+  setsid bash "$REPO_DIR/dashboard/start_dashboard.sh" </dev/null >/dev/null 2>&1 || true
+  if [ "$(wait_http "$DASH_URL" 20)" = "000" ]; then
+    # Not fatal for the control plane — inference is unaffected by the web UI.
+    log "WARN: dashboard did not come up on :${DASH_PORT} — see dashboard/dashboard.log"
+  else
+    log "dashboard up on :${DASH_PORT}"
+  fi
+fi
