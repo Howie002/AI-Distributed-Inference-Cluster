@@ -1,5 +1,13 @@
 # AI Distributed Inference Cluster - Notes
 
+## 2026-07-31 (later) - Death Star 2 registered with the cluster; onboarding was further along than the 07-30 note knew
+
+Dominic (on the freshly-revived :3005 dashboard): "why does it not see the Death Star 2?" Answer: **the dashboard only lists nodes registered in the master's `node_config.json`, and DS2 was never added.** But probing `10.2.35.21` showed onboarding had quietly progressed past yesterday's checklist: the box is UP on its assigned IP (so the DHCP-reservation ask to Cody is evidently satisfied) and **already runs a healthy cluster agent** (`:5000/health` 200) reporting **4x RTX Pro 6000 Blackwell Max-Q (97,887 MB each)**, GPUs idle, zero instances.
+
+- **Identity checked before registering:** `.20` (Death Star 1) and `.21` answered SIMULTANEOUSLY with identical 4x-Blackwell inventories - two distinct physical boxes, settling half of the 07-30 doubt (whether the HP Z pilot unit is DS2 *reclassified* remains open; what is now certain is that two 4x-Blackwell machines are live at once).
+- **Registered as "Death Star 2"** via the dashboard's own add-node flow (`POST :3005/api/nodes/add`, atomic write to `node_config.json`); master agent `/nodes` now returns Nano + Death Star + Death Star 2. `node_config.json` is gitignored runtime config - nothing to commit for the registration itself.
+- **Remaining from the 07-30 checklist:** decide model/workload placement across DS1 vs DS2 (nothing deployed on DS2 yet); confirm the chassis model for the Overview table; pilot-unit disambiguation above.
+
 ## 2026-07-31 - Cluster web dashboard was down ~a month unnoticed; now in the boot path (boot.sh step 3)
 
 Dominic asked why the "vllm cluster webpage" was unreachable. Ground truth: **nothing was listening on :3005** - the dashboard's own log shows its last start on **2026-07-01**; the 07-27 patch reboot is the latest it could have died, and no sweep ever counted it because it was in NEITHER systemd NOR the fleet boot path (this repo's `boot.meta.json` boots only the control plane). Same failure class as foundation-after-hours on 07-29, third instance overall (llm-proxy 07-28, after-hours 07-29, this).

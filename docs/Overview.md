@@ -42,13 +42,17 @@ Text-to-speech + STT + voice cloning is served by **[Voicebox](https://voicebox.
 
 ## Hardware Fleet
 
-| Device | Model | GPU | Role | Status |
-|--------|-------|-----|------|--------|
-| VM Host | TBD | N/A | App Server (Docker) | Planned |
-| DGX Spark 0 | HP ZGX Nano G1n | NVIDIA GB10, 128GB | Inference Node 0 | ✅ Ollama Running - Pending Static IP + nginx-ollama config |
-| DGX Spark 1 | HP ZGX Nano G1n | NVIDIA GB10, 128GB | Inference Node 1 | Setup Pending |
-| AMD Box | HP AI Box | AMD 395+, 128GB | Testing / Staging | Available |
-| Z Workstation | HP Z Workstation (Pilot) | 4x RTX Pro 6000 Blackwell | Pilot - Snowflake AI | TENTATIVE |
+> ⚠️ This table is known stale in places (e.g., "VM Host: TBD" - the VM has been live at `10.2.35.10` since May) and hasn't had a full reconciliation pass. The **Death Star** and **Death Star 2** rows below are current as of 2026-07-31; treat the rest with caution until reconciled against Notes.md's dated entries.
+
+| Device | Model | GPU | IP | Role | Status |
+|--------|-------|-----|-----|------|--------|
+| Master VM | - | N/A | `10.2.35.10` | Orchestrator (proxy, control agent, dashboard) | Live |
+| Death Star | HP Z8 Fury | 4× RTX Pro 6000 Blackwell (~382 GB total) | `10.2.35.20` | Big compute | Live |
+| **Death Star 2** | *(chassis TBC)* | 4× RTX Pro 6000 Blackwell Max-Q (~382 GB total, confirmed via agent) | **`10.2.35.21`** | Big compute | **Live + registered 2026-07-31** (agent healthy, GPUs idle, no models deployed yet). See Notes.md 2026-07-31. |
+| Nano 0 / DGX Spark | HP ZGX Nano G1n (`zgx-0d80`) | NVIDIA GB10, 128GB | `10.2.35.30` | Small compute | Live |
+| DGX Spark 1 | HP ZGX Nano G1n | NVIDIA GB10, 128GB | TBD (`10.2.35.3x`) | Small compute | Setup Pending |
+| AMD Box | HP AI Box | AMD 395+, 128GB | TBD | Testing / Staging | Available |
+| Z Workstation (pilot) | HP Z Workstation | 4× RTX Pro 6000 Blackwell | TBD | Pilot - Snowflake AI | TENTATIVE - possibly the same unit as Death Star 2; not yet confirmed distinct (see Notes.md 2026-07-30) |
 
 ## Infrastructure Phases
 
