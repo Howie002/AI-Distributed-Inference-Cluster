@@ -3,11 +3,41 @@
 > *Reconciled 2026-07-29 (SB↔repo): the vault copy is canonical. Where both sides had drifted in the same section, the older repo wording was superseded — it remains intact in the repo's git history at the pre-reconciliation commit.*
 
 **Repo:** [github.com/Howie002/AI-Distributed-Inference-Cluster](https://github.com/Howie002/AI-Distributed-Inference-Cluster) (private, active on `dev`)
-**Last Synced:** 2026-07-17 *(body current through 07-16 Voicebox entries)*
+**Last Synced:** 2026-08-10 *(embedding redundancy + 2048-token ceiling)*
 **Current Phase:** v2 Cluster - operational hardening + analytics follow-on
 **Target Production:** Ongoing operational service
 
 Living document. Software feature work in "In Progress" and phased sections below. Deployment/ops-level tasks in the first section. Nothing is scheduled - items get picked up as capacity allows.
+
+---
+
+## New from 2026-08-10 - embedding redundancy and the 2048-token ceiling
+
+- [x] **nomic-embed had no redundancy at all** (gemma had two nodes, embeddings had one). Second instance launched on the Death Star's idle GPU 1 at `:8024`; failover verified by killing `:8022` and confirming embeddings continued, then restoring it. Both registered.
+- [ ] **Embeddings still have no BOX-level redundancy** - both instances are on `10.2.35.20`. Options: the Nano has only ~4 GB VRAM free so a third instance there risks its gemma; or bring Death Star 2 back (see below). This is the same shape as the Voicebox failover gap logged 08-04, and now applies to Living Catalog's semantic search, a Sept 14 flagship surface.
+- [ ] **Death Star 2 (`10.2.35.21`) agent is not answering on `:5000`.** The box was registered 07-31 with 4x RTX Pro 6000 Blackwell Max-Q idle; today it is unreachable, so it contributes nothing and cannot host the embedding replica that would give box-level redundancy.
+- [ ] **`register_with_proxy: true` on `/instances/launch` did not re-register a relaunched instance**; an explicit `POST /proxy/sync` was needed. Either fix the launch path or document that sync always follows a launch.
+- [x] **Confirmed `/proxy/sync` cannot be emptied by the master's blank `/instances`** - it fans out to every node in `node_config.json`, and only writes an empty model list if all nodes fail. Closes the hazard flagged earlier.
+
+## New from 2026-08-04 - Voicebox failover/redundancy gap
+
+**Andrew (2026-08-04):** noticed while thinking about the Foundation AI Dashboard's view of the AI stack - there is no failover/redundancy for Voicebox. It runs as a single Docker instance on the Death Star (`10.2.35.20`), GPU 0. If that node goes down (hardware failure, or mid-migration since the Death Star 1 → Death Star 2 transfer is already in flight), Foundation Coach and HyperFrames - the two current TTS consumers - lose voice capability entirely with no fallback.
+
+- [ ] **Decide the redundancy shape** - hot standby on a second node (Death Star 2 is a natural candidate once onboarded), active-active with routing, or an accepted-risk single point of failure with fast manual recovery
+- [ ] **Define failure detection** - how the VM/webapp layer (Foundation Coach, HyperFrames) notices Voicebox is unreachable and what it does instead of silently failing
+- [ ] **Reconcile with the existing multi-instance discussion** (2026-07-16, above) - that thread is about latency/parallel-use contention, not failover, but a second instance placement decision could serve both goals if planned together
+- [ ] Surface Voicebox health/redundancy state on the Foundation AI Dashboard, not just the vLLM cluster state
+
+---
+
+## New from 2026-07-30 - Death Star 2 onboarding
+
+- [x] ~~**Get DHCP reservation for `10.2.35.21`** from Cody~~ — **Done 2026-07-31.** Physical-terminal verification: `ens255` up, MAC `b4:e2:5b:cd:6b:3e`, DHCP lease `10.2.35.21/24`; no static address set.
+- [ ] **Register Death Star 2 with the cluster** - `node_config.json` / control agent, role=`child`.
+- [ ] **Confirm Death Star 2's actual GPU spec** - assumed similar to Death Star 1 (4× RTX Pro 6000 Blackwell) but not yet physically confirmed.
+- [ ] **Resolve whether Death Star 2 is the same unit as the HP Z Workstation pilot** (identical GPU spec, never conclusively distinguished) or genuinely separate new hardware.
+- [ ] Decide model/workload placement once Death Star 2 is live (mirror Death Star 1, or split by workload type).
+- [ ] **Execute and verify the Death Star 1 → Death Star 2 transfer** using [[DS2-Migration-Instructions-2026-07-31]] — includes cluster services, model endpoints, irreplaceable Voicebox volumes/profiles, direct-IP consumer updates, and pre-decommission load-balancing checks. **Status 2026-08-05 (Andrew): ongoing, expected to close this week (S10W7).**
 
 ---
 
@@ -20,16 +50,15 @@ Living document. Software feature work in "In Progress" and phased sections belo
 - [x] ~~**Higgs Audio V3 deploy**~~ — **ABANDONED 2026-07-08 (dead end).** sm120 driver/fault-buffer saga + zero-shot-only voices; pivoted to Voicebox. Install artifacts (`/home/admin/higgs-audio`, 19 GB) to be removed.
 - [ ] **Deploy `dev` → live + merge `dev`→`main`** — **NON-CRITICAL (per Andrew 2026-07-08).** 5 commits pending (GPU labels, enriched cards, embedding-mode fix, watchdog disable). Death Star runs `dev`; Master VM + Nano need pull + agent restart, master dashboard rebuild. Pick up when convenient.
 
+## Backlog additions (Quick Notes filing, 2026-07-06)
+- **Voicebox on the Death Star** (Andrew, 07-01): point the VM at Voicebox for all audio requests; keep it a SIBLING service to the inference proxy, do not merge (STT/TTS vs. TTT). Relates to the Higgs Audio TTS thread.
+- **Model-load visibility feature + open issues**: spec and commit log in [Cluster-Fixes-and-Model-Load-Visibility-2026-07-01.md](Cluster-Fixes-and-Model-Load-Visibility-2026-07-01.md) (moved whole from Quick Notes).
+
 ## Carry-overs from 2026-07-01
 
 - [ ] **Fix + re-enable the auto-restart watchdog** — **DEFERRED (per Andrew 2026-07-08, "leave the watchdog for now").** Disabled 2026-07-01 (`dev` `9963401`). It was relaunching *healthy* instances (flaky `net_connections` scan → thinks they're missing) and the launch VRAM-reclaim then killed them → crash-loop (gemma `:8020`, `:8021`). **Re-enable only after:** (a) instance scan is robust / not solely `psutil.net_connections`-dependent; (b) **reclaim never kills a healthy co-located/same instance** (the core fix — also unblocks the keep-retrying watchdog `e30544a` and the 196K `:8021`); (c) health check uses `127.0.0.1` not `localhost` (IPv6 `::1` vs IPv4 bind). Then uncomment the two lines in `_on_startup`.
 - [ ] ⭐ **Model-load visibility** — surface load/failure state in the agent + dashboard. Today a loading/crash-looping model shows as `absent` in `/instances` (only bound ports listed) — indistinguishable from "never existed"; confirming gemma `:8020` was stuck needed a manual `nvidia-smi` poll loop. Build: lifecycle state (`starting → loading_weights → allocating_kv → warming_up → healthy`, plus `crash_looping (N attempts)` / `abandoned`) parsed from the vLLM launch log markers; dashboard status pill + a per-card GPU-mem sparkline (a crash-loop is an obvious sawtooth). See SB quick note `2026-07-01-inference-cluster-fixes-and-model-load-visibility-roadmap`.
 - [ ] **Deploy `dev` → live** — 5 commits pending (GPU model labels `ed040f6`, enriched cards `99ff87e`, embedding `mode` fix `adc50f4`, watchdog keep-retry `e30544a` [now moot — superseded by the disable], watchdog disable `9963401`). Death Star already runs `dev`; Master VM + Nano need pull + agent restart, master needs dashboard rebuild. Then merge `dev`→`main`.
-
-## Carry-overs from 2026-06-29
-
-- [ ] **Higgs Audio V3 deploy on Death Star** — `dev` branch ready (`e03ce50`). Pending on other machine: run `scripts/install_higgs_audio.sh`, create `litellm/.env` with `HIGGS_AUDIO_HOST`, restart proxy. Then verify API format, benchmark latency vs. Kokoro, get voice IDs. See Notes.md for full checklist.
-- [ ] **Pull `dev` to Master VM + Death Star** — both repos have `dev` commits to pull before any deployment work.
 
 ## Carry-overs from 2026-06-29
 
@@ -63,6 +92,14 @@ Living document. Software feature work in "In Progress" and phased sections belo
 > - [ ] **Dashboard `dev` branch on GitHub is ahead of local** — someone (CI? webhook? earlier session?) pushed to `origin/dev` independently. Local push to `dev` rejected. Fetch + reconcile before next dev-branch work.
 > ---
 
+## Self-Healing Follow-ons *(from 2026-05-14 deploy of commit `5716ba1`)*
+
+- [ ] **`/diagnose` surfaces intended-vs-actual mismatches** - today it only shows orphan VRAM forensics. Extend it to flag instances in `intended_instances.json` that are not running, with last-restart-attempt timestamp and current backoff state.
+- [ ] **Dashboard surfaces "instance abandoned" state** - when the watchdog gives up after exhausting backoff, the dashboard should make that visible with a one-click "restart" / "remove from intent" action. Currently abandoned state is silent until an operator inspects the agent.
+- [ ] **Escalation rung when reclaim doesn't free enough VRAM** - after N failed launches in a row, surface "manual reboot required" (or `nvidia-smi --gpu-reset` recipe) in the dashboard rather than silently retrying forever.
+
+---
+
 ## Active Deployment Tasks
 
 Operational tasks layered on top of the running cluster. Not code features - hardware, DNS, security.
@@ -84,14 +121,6 @@ Operational tasks layered on top of the running cluster. Not code features - har
 - [ ] Benchmark vs. DGX Sparks using the dashboard
 - [ ] Connect to Foundation Snowflake AI app as inference target
 - [ ] Purchase decision: 2× workstations, 2 cards each if validated
-
----
-
-## Self-Healing Follow-ons *(from 2026-05-14 deploy of commit `5716ba1`)*
-
-- [ ] **`/diagnose` surfaces intended-vs-actual mismatches** - today it only shows orphan VRAM forensics. Extend it to flag instances in `intended_instances.json` that are not running, with last-restart-attempt timestamp and current backoff state.
-- [ ] **Dashboard surfaces "instance abandoned" state** - when the watchdog gives up after exhausting backoff, the dashboard should make that visible with a one-click "restart" / "remove from intent" action. Currently abandoned state is silent until an operator inspects the agent.
-- [ ] **Escalation rung when reclaim doesn't free enough VRAM** - after N failed launches in a row, surface "manual reboot required" (or `nvidia-smi --gpu-reset` recipe) in the dashboard rather than silently retrying forever.
 
 ---
 
@@ -453,6 +482,8 @@ Today onboarding a master or child node requires the operator to know and type t
 - Configurable: `node.sh` setup gains `DNS_SEARCH_DOMAIN` and `NODE_DISCOVERY_RANGE` env vars or `node_config.json` fields; falls back to manual IP entry if discovery is disabled.
 
 **Device-profile setup presets**
+*Precursor step now documented, 2026-08-04:* the human/tooling bring-up sequence that happens before `node.sh setup` even runs - install Claude CLI, then VS Code, then Obsidian, prepare SSH, then hand Claude the Second Brain's own instructions to finish the rest. See [[Node-Bring-Up-Checklist-2026-08-04]], captured from onboarding Death Star 2. This is now the standard starting point for bringing up any new node, ahead of the automated preset work below.
+
 Today `node.sh setup` asks generic questions (role, IP, port) and a single aarch64-vs-x86_64 switch picks wheels. Real deployments tend to be a handful of well-known platforms — DGX Spark (GB10), HP Z8 Linux + RTX PRO 6000 Blackwell, Jetson, generic x86_64 + consumer RTX, etc. Add a device-type picker to the setup flow that expands into a preset: correct wheel index (cu130 nightly vs cu128 stable), torch pin, vLLM channel (pre vs stable), default GPU layout in `stack_configs.json`, expected SM/compute-cap warnings, and any platform-specific quirks (unified memory, NVLink topology, MIG). A profile registry (`setup_profiles/*.yaml` or similar) keeps the logic out of the shell script and makes new hardware trivial to onboard — add a profile, pick it at setup.
 
 **Docker Compose deployment**
@@ -490,8 +521,3 @@ Small or uncertain items that may not be worth building but are worth rememberin
 ---
 
 **Last Updated:** 2026-07-17 (CUDA blocker marked resolved; Death Star backends documented)
-
-## Backlog additions (Quick Notes filing, 2026-07-06)
-- **Voicebox on the Death Star** (Andrew, 07-01): point the VM at Voicebox for all audio requests; keep it a SIBLING service to the inference proxy, do not merge (STT/TTS vs. TTT). Relates to the Higgs Audio TTS thread.
-- **Model-load visibility feature + open issues**: spec and commit log in [Cluster-Fixes-and-Model-Load-Visibility-2026-07-01.md](Cluster-Fixes-and-Model-Load-Visibility-2026-07-01.md) (moved whole from Quick Notes).
-

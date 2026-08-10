@@ -1,5 +1,57 @@
 # AI Distributed Inference Cluster - Notes
 
+## 2026-08-10 - nomic-embed was a single point of failure, and was also rejecting long inputs
+
+The new Foundation AI Dashboard cluster panel (`/admin/cluster`, feedback #125) surfaced it on its first run: **`gemma-4-26b-a4b-nvfp4` ran on two nodes, `nomic-embed-text-v1-5` on one.** Losing `10.2.35.20` would have taken every embedding in the fleet with it - Living Catalog semantic search over ideas, researchers and foundations, and the Chat KB grounding - while chat kept working, so the failure would have looked like "Living Catalog is broken" rather than "a node is down". Same class of gap Andrew logged for Voicebox on 08-04.
+
+**Redundancy added.** Launched a second instance on the Death Star's **idle GPU 1** at `:8024` (`runner=pooling`, `trust_remote_code`, `gpu_memory_utilization=0.15`) via the agent's `/instances/launch`. GPUs 0 and 1 were sitting at 6.1 GB and 0.0 GB of 95.6 GB, so there was room to spare.
+
+**Failover verified, not assumed.** Killed the original `:8022` outright and embeddings kept serving 768-dim vectors from `:8024` alone (first call 14.7s while the proxy settled, then 0.02s); gemma was unaffected. Then relaunched `:8022` on its original GPU 2. Both are registered now.
+
+**Honest limit: this is instance-level redundancy, not box-level.** Both instances live on `10.2.35.20`, so losing that node still takes embeddings down. Real redundancy needs either the Nano (only ~4 GB VRAM free - adding a model there risks the gemma instance it already serves) or **Death Star 2, whose agent is not answering on `:5000`**. Recorded in the Roadmap.
+
+### `/proxy/sync` is safe to call, and here is why that was worth checking
+
+I had earlier flagged the master's empty `/instances` as a hazard - if sync regenerated the model list from it, the config would empty and inference would stop fleet-wide. Reading `_sync_proxy()` settles it: it aggregates **local scan plus a parallel fan-out to every node in `node_config.json`**, so with `.20` and `.30` answering it produces a complete config. It only writes `model_list: []` when *every* node fails to report. The master's own `/instances` returning `[]` is correct - aivm is CPU-only and that endpoint is local-only. What is genuinely empty is `/cluster/nodes` (dynamic child registration), which sync does not depend on.
+
+One rough edge: relaunching `:8022` with `register_with_proxy: true` did **not** re-add it to the config; an explicit `POST /proxy/sync` afterwards did. Worth knowing that the auto-register on launch is not reliable enough to skip the sync.
+
+### The integration failure underneath the SPOF
+
+The embedder's log was carrying real errors: `This model's maximum context length is 2048 tokens... your prompt contains at least 2049 input tokens`. **26 embedding calls failed** that way (against 5,058 successes), all during the 07-23 foundations import. And the model cannot simply be given more room - launching it at `max_model_len 8192` is refused, because this checkpoint's `config.json` sets `max_position_embeddings=2048`. Fixed on the client side in Living Catalog (`lms.embed_text` now chunks and mean-pools); see that project's Notes for 2026-08-10.
+
+## 2026-08-04 - Lessons learned onboarding Death Star 2: standard node bring-up sequence
+
+Andrew captured the bring-up sequence that worked for Death Star 2, generalized as the standard for any future node: **(1)** install Claude CLI first - it bootstraps everything else, **(2)** install VS Code for a real repo-working UI, **(3)** install Obsidian to open the Second Brain vault on the machine for full context, **(4)** prepare SSH for remote access going forward, **(5)** point Claude at the Second Brain's existing instructions (Agent Instructions.md, this project's docs) to complete whatever machine-specific setup remains. Full checklist: [[Node-Bring-Up-Checklist-2026-08-04]].
+
+## 2026-08-03 - HP case-study exploratory call confirmed for Wednesday, August 5, 1:00 PM CST
+
+Objective per the HP email thread: an exploratory call to discuss developing and publishing a joint HP-Texas A&M Foundation customer success story case study. Andrew's framing going in: a working session on how Foundation is using HP's systems (Death Star 1/2 hardware) to do "amazing things" - useful context for what to bring to the call.
+
+HP (Erik Hawkins) offered to push the meeting to the week of August 17 since he's traveling the week of August 10; Steve Catlin declined and kept the original slot - **1:00 PM Central (2:00 PM Eastern), Wednesday, August 5, via Microsoft Teams.**
+
+**HP contacts (fills the "HP Representative - TBD" gap in Overview.md):** Erik Hawkins (erik-michael.hawkins@hp.com), Jesse Otts (jesse.otts@hp.com). Foundation side: Steve Catlin, Andrew Howerton.
+
+## 2026-07-31 - Death Star 2 network reservation resolved; migration checklist prepared
+
+Andrew focused on the critical VM/cluster work while Dominic was gone, then shifted to preparing the Death Star 1 → Death Star 2 transfer.
+
+**Network state verified at the physical DS2 terminal:**
+- Interface `ens255` is `state UP`.
+- MAC address: `b4:e2:5b:cd:6b:3e`.
+- DS2 holds `10.2.35.21/24` by DHCP; Cody's reservation has landed.
+- No static IP was set, preserving the AI-VLAN DHCP-reservation convention.
+
+**Migration preparation:** Created [[DS2-Migration-Instructions-2026-07-31|Death Star 1 → Death Star 2 Migration Instructions]], covering cluster-agent/dashboard replication, model-serving setup, Voicebox state transfer, direct-IP consumer risk, and an explicit verification checklist.
+
+**Local-stack / Salesforce architecture discussion captured:**
+- Salesforce-side access should be read-only; “Joes” is expected to create a read-only access path. The identity/name is preserved verbatim because the quick capture does not establish whether it is a person, team, or system.
+- Proposed flow: user question in Salesforce → authenticated request to the local AI VM (`.35` network) → interpretation/query work against Snowflake → response returned to Salesforce.
+- Security candidates named in the discussion: Salesforce REST API, OAuth, and a Salesforce Named Credential; Cody is expected to create the Named Credential.
+- Network/hosting question remains open: expose a public-facing route to the AI VM with Cody/Steve, or use an Azure/web-proxy route such as `APIAI.txamfoundation.com`. No route, credential, or firewall change is claimed complete.
+
+**Still open and not claimed complete:** cluster registration, DS2 GPU-spec confirmation, model launch/load-balancing verification, Voicebox volume migration, Foundation Coach/HyperFrames endpoint decision, and confirmation that DS2 is distinct from the earlier HP Z Workstation pilot. Andrew's reflection says he “focused on the Deathstar transfer,” which supports preparation/progress, not completion of those technical gates.
+
 ## 2026-07-31 (later) - Death Star 2 registered with the cluster; onboarding was further along than the 07-30 note knew
 
 Dominic (on the freshly-revived :3005 dashboard): "why does it not see the Death Star 2?" Answer: **the dashboard only lists nodes registered in the master's `node_config.json`, and DS2 was never added.** But probing `10.2.35.21` showed onboarding had quietly progressed past yesterday's checklist: the box is UP on its assigned IP (so the DHCP-reservation ask to Cody is evidently satisfied) and **already runs a healthy cluster agent** (`:5000/health` 200) reporting **4x RTX Pro 6000 Blackwell Max-Q (97,887 MB each)**, GPUs idle, zero instances.
@@ -120,12 +172,14 @@ Cleanup done from the aivm side via the Voicebox API: dismissed the two errored 
 
 ---
 
+## 2026-07-06 - Filed: 07-01 dev-branch fixes + model-load visibility note
+The 2026-07-01 Quick Note (dev-branch commit log, operational gotchas, open issues, model-load visibility feature spec) moved whole into this project: [Cluster-Fixes-and-Model-Load-Visibility-2026-07-01.md](Cluster-Fixes-and-Model-Load-Visibility-2026-07-01.md). Roadmap backlog updated to point at it.
+
 ## 2026-07-02 — Router timeout 30s→150s + Death Star back in the pool
 
 **Router timeout raised** (`agent/agent.py` `router_settings.timeout`, commit `1056f98`; config snapshot `1c3f664`). The 30s router timeout 408'd legitimate long non-streaming generations — Tetrix document extraction runs 25-45s, HR synthesis 80-120s — and `num_retries: 3` × 30s wedged callers for minutes (surfaced as three Tetrix docs stuck 'processing'; diagnosis trail in the Tetrix ROADMAP 07-02 entry). Now 150s, keeping the defensive-timeout cascade ordered: **NGINX 180 > tool clients ~170 > router 150 > vLLM**. Streaming paths (Coach voice, Chat) unaffected in feel — total-request cap, not time-to-first-token. Deployed via the standard procedure: commit → restart master agent (:5000) → `POST /proxy/sync`; chat + embeddings verified immediately after.
 
 **Death Star is back.** Verified live: nvfp4 gemma serving on `10.2.35.20:8021` AND `:8023` (both in the proxy's least-busy gemma pool alongside `10.2.35.30:8020`), nomic embeddings on `:8022` — no crash-loop, so the CUDA blocker is resolved (Cody's upgrade evidently landed). Embedder health verified with a sustained loop (20/20 single embeds @ ~30ms avg + batch-array). **Downstream unblocks:** Deep Research live runs (first live run still needs a verification pass) and the R&FI 3,600-researcher briefing batch (awaiting Andrew's go — it occupies the LLM for hours).
-
 
 ## 2026-07-01 — Auto-restart watchdog DISABLED (was causing self-inflicted crash-loops)
 
@@ -149,107 +203,6 @@ Cleanup done from the aivm side via the Voicebox API: dismissed the two errored 
 Both the Master VM (10.2.35.10) and Death Star (10.2.35.20) are now on UPS power. Both nodes verified to come back up cleanly after a reboot and restore proxy inference without manual intervention. This closes the cold-reboot verification concern that had been open since June 24.
 
 The NVRM shadow fault buffer issue that blocked Higgs Audio V3 first inference was tied to 5-day uptime under memory pressure. With UPS in place, controlled reboots can be done on demand without power-loss risk, removing the primary source of driver state accumulation.
-
----
-
-## 2026-06-29 (PM) — Higgs Audio V3 Deploy on Death Star: Full Stack Working, Blocked on Driver Fault-Buffer
-
-**Status:** Software stack 100% configured and verified. Blocked on a driver-level GPU memory allocation failure. Rebooting the box to retry on clean driver state (in progress at end of session).
-
-**Goal of the session:** Actually deploy Higgs Audio TTS V3 on the Death Star (`10.2.35.20`, GPU 1 — GPU 0 reserved for training) and produce a first `.wav` (proof of concept). The model is **`bosonai/higgs-tts-3-4b`** (4B Qwen3 backbone + audio codec), served via **SGLang-Omni** (the official Boson AI self-host path; the old `boson-ai/higgs-audio` repo is V2 only).
-
-### What got built / installed (all on the Death Star)
-- **SGLang-Omni** installed manually into `/home/admin/higgs-audio/venv` (uv venv, py3.12). Docs recommend Docker but disk was too tight; manual install works.
-- **Model** downloaded to `/home/admin/higgs-audio/model` (9.3 GB, public, no HF auth needed).
-- **`/home/admin/higgs-audio/start_higgs.sh`** — complete launcher with all required env (see below).
-- **`/home/admin/higgs-audio/higgs_poc.yaml`** — pipeline config with the tts_engine server_args_overrides that are required on sm120.
-- API is **OpenAI-compatible** (`POST /v1/audio/speech`) — confirmed. So once serving, it's a drop-in for the proxy + Coach (no custom Pipecat wrapper needed). **Note: V3 is zero-shot — no preset named voices like Kokoro; voice cloning is via reference audio clip.** This changes the Coach voice-picker design (decide later: hide picker, or use reference-clip "characters").
-
-### The sm120 (RTX PRO 6000 Blackwell) gauntlet — all REAL, all required
-Took a long debugging chain. The opaque `-9 SIGKILL` crashes (no traceback) masked a series of plain toolchain errors. **`CUDA_LAUNCH_BLOCKING=1` is the key** — it converts the async crash into a readable Python error. Root causes, in order found:
-1. **CUDA 12.8 can't target sm120** — needs ≥ 12.9. Installed `cuda-nvcc-13-0` + `cuda-libraries-dev-13-0` (the latter for `cublasLt.h` and other math-lib dev headers). `/usr/local/cuda-13.0`.
-2. **FlashInfer's `is_cuda_version_at_least("12.9")` is buggy for CUDA 13.0** → workaround `FLASHINFER_CUDA_ARCH_LIST="12.0f"`.
-3. **No prebuilt sm120 cubins** → FlashInfer JIT-compiles kernels on first request via **ninja** (must be on PATH — prepend `venv/bin`) + nvcc-13.
-4. **Acoustic-encoder `torch.compile` + warmup crash on sm120** → patched `sglang_omni/models/higgs_tts/stages.py` to skip both, gated by `HIGGS_DISABLE_ACOUSTIC_COMPILE=1`.
-5. Pipeline config needs: `disable_cuda_graph: true`, `disable_flashinfer_autotune: true`, `attention_backend: triton`, `sampling_backend: pytorch`, `mem_fraction_static: 0.50`.
-
-**After all fixes: server starts clean, all 4 stages load, kernels compile.** Verified the model loads (7.6 GB), KV cache allocates, Uvicorn serves on `:8881`.
-
-### The remaining blocker (THE thing to solve next)
-First inference dies with NVRM **`NV_ERR_NO_MEMORY` allocating system memory for the GPU shadow fault buffer** (`_kgmmuClientShadowFaultBufferPagesAllocate`). Confirmed via `sudo dmesg`. **Not a code, config, RAM, or sm120-compute problem** — it failed even with 21 GB free RAM, drained swap, and an empty GPU. vLLM/gemma run fine on the same box (they use plain `cudaMalloc`; sglang-omni uses a GPU-fault-based memory path that needs the shadow fault buffer, which the driver refuses to allocate). Box had 5-day uptime under heavy memory pressure. **Hypothesis: stale driver memory state → reboot should clear it.** Bringing Higgs up FIRST on a fresh boot (before cluster/training reclaim resources) is the test.
-
-### The verified launch command (post-reboot)
-```bash
-bash /home/admin/higgs-audio/start_higgs.sh
-# env baked in: MAX_JOBS=1, PATH=venv/bin:cuda-13.0/bin, CUDA_VISIBLE_DEVICES=1,
-# HIGGS_DISABLE_ACOUSTIC_COMPILE=1, FLASHINFER_CUDA_ARCH_LIST=12.0f, CUDA_HOME=/usr/local/cuda-13.0
-```
-First request JIT-compiles (~1-3 min, cached after). `file ~/higgs_test.wav` → `WAVE audio` = POC achieved.
-
-**Full reproduction + gotchas saved to auto-memory `higgs-audio-sm120-serving`.** If clean-boot retry still hits the fault-buffer error, it's a genuine driver/Blackwell bug → defer to the real Death Star hardware (~2 weeks); the proxy + Coach integration is already staged on the `dev` branches (see entry below).
-
----
-
-## 2026-06-29 — Model Evaluation: Minimax 2.7 on Dual RTX Pro 6000 Blackwell
-
-**Test:** Minimax 2.7 running across two RTX Pro 6000 Blackwell GPUs on the Death Star
-**Tool:** Continue extension (VS Code) as the AI agent coding interface
-
-### Results
-
-**Throughput:** ~80 tokens/second across both GPUs. Strong decode performance for a model of this size.
-
-**Code quality:** Very good. Comparable to Claude Code for agentic coding tasks. Genuinely competitive for most coding workflows when used with the Continue extension.
-
-**Limitations:**
-- Slow prompt processing (prefill / time-to-first-token is sluggish; noticeable on long inputs)
-- Context window under 200K tokens; cramped during longer Second Brain sessions and extended coding tasks where full context is needed
-
-### Verdict
-
-Minimax 2.7 is a credible local alternative to Claude Code for standard coding tasks. The throughput is good enough for interactive use. However, the slow prompt processing and sub-200K context window make it a poor fit for the Second Brain management workflows and for long-running coding sessions where full context matters. Better suited to contained, shorter coding tasks where the context limit is not a binding constraint.
-
-**Follow-on:** The two DGX Spark nodes (GB10, 128GB each) are already on the network and pending naming. Revisit Minimax 2.7 or a larger context window variant once they are fully integrated into the cluster routing — more combined VRAM may resolve the prompt processing bottleneck. Continue extension integration is confirmed working as the agent coding interface.
-
----
-
-## 2026-06-29 — Higgs Audio TTS V3: Modular Proxy Architecture (Dev Branches Shipped)
-
-**Status:** Dev branches ready. Deployment pending on Death Star + Master VM (other computer).
-**Repos:** `AI-Distributed-Inference-Cluster` @ `dev` commit `e03ce50`, `Foundation-Coach` @ `dev` commit `bfb7253`
-
-### What shipped on `dev` today
-
-**Cluster repo — modular static model overlay:**
-- `litellm/static_models.yaml` (new) — non-vLLM model declarations that survive every agent-generated rewrite of `cluster_config.yaml`. Higgs Audio entry uses `$HIGGS_AUDIO_HOST` env var.
-- `agent/agent.py` — `_proxy_write_and_restart` now reads `static_models.yaml` and merges entries after building the vLLM list. Env vars expanded at write time; unexpanded entries skipped silently.
-- `litellm/start_proxy.sh` — sources `litellm/.env` before starting so `HIGGS_AUDIO_HOST` is available.
-- `litellm/.env.example` — documents audio host vars; copy to `litellm/.env`.
-- `scripts/install_higgs_audio.sh` — idempotent install script: clones repo, builds venv, generates `start_server.sh`/`stop_server.sh`, prints systemd template + the `litellm/.env` line.
-
-**Foundation Coach repo — provider-aware TTS:**
-- `TTS_PROVIDER` env var (`kokoro`|`higgs-audio`), dynamic VALID_VOICES, `TTS_BASE_URL` default → proxy (`:4000`), voice picker switches per provider, `HIGGS_AUDIO_VOICES` placeholder array.
-
-### Hardware swap path (when Death Star demo is replaced — ~2 weeks)
-```
-1. New node:   bash scripts/install_higgs_audio.sh
-2. Master VM:  edit litellm/.env → HIGGS_AUDIO_HOST=http://<new-ip>:8881
-3.             bash litellm/stop_proxy.sh && bash litellm/start_proxy.sh
-Foundation Coach: zero changes — calls the proxy, not the node directly.
-```
-
-### Still pending (Death Star access needed)
-- [ ] Pull `dev` to Master VM + Death Star
-- [ ] Run `scripts/install_higgs_audio.sh` on Death Star — confirm `HIGGS_AUDIO_REPO` URL + `START_CMD` entrypoint in generated `start_server.sh`
-- [ ] Create `litellm/.env` on Master VM: `HIGGS_AUDIO_HOST=http://10.2.35.20:8881`
-- [ ] Restart proxy → verify `higgs-audio-tts` in `GET /v1/models`
-- [ ] **Verify API format:** OpenAI-compatible `/v1/audio/speech`? If custom, write thin Pipecat wrapper
-- [ ] **Benchmark latency:** first-chunk vs. Kokoro — must be ≤ for real-time voice
-- [ ] **Get voice IDs** → fill `HIGGS_AUDIO_VOICES` in `prospect.ts` + `TTS_VOICES` in `backend/.env`
-- [ ] **Speed param:** confirm `speed` support; if not, set `NEXT_PUBLIC_TTS_SPEED_SUPPORTED=false`
-- [ ] Live voice test end-to-end via `bash boot.sh`
-
-**Filed from:** Quick Note `2026-06-26-higgs-audio-tts-v3-integration`
 
 ---
 
@@ -304,6 +257,44 @@ Resolved Andrew's Planner card **"VM Inference Proxy Update"** — cluster embed
 > **Docs:** added `docs/UsingTheProxy.md` as the single consumer-facing reference for the `:4000` proxy.
 > **Operational note worth recording:** the aivm cluster agent runs as a plain background process (`.agent_pid`), **NOT under systemd** — it will not auto-restart on reboot.
 > ---
+
+## 2026-06-29 (PM) — Higgs Audio V3 Deploy on Death Star: Full Stack Working, Blocked on Driver Fault-Buffer
+
+**Status:** Software stack 100% configured and verified. Blocked on a driver-level GPU memory allocation failure. Rebooting the box to retry on clean driver state (in progress at end of session).
+
+**Goal of the session:** Actually deploy Higgs Audio TTS V3 on the Death Star (`10.2.35.20`, GPU 1 — GPU 0 reserved for training) and produce a first `.wav` (proof of concept). The model is **`bosonai/higgs-tts-3-4b`** (4B Qwen3 backbone + audio codec), served via **SGLang-Omni** (the official Boson AI self-host path; the old `boson-ai/higgs-audio` repo is V2 only).
+
+### What got built / installed (all on the Death Star)
+- **SGLang-Omni** installed manually into `/home/admin/higgs-audio/venv` (uv venv, py3.12). Docs recommend Docker but disk was too tight; manual install works.
+- **Model** downloaded to `/home/admin/higgs-audio/model` (9.3 GB, public, no HF auth needed).
+- **`/home/admin/higgs-audio/start_higgs.sh`** — complete launcher with all required env (see below).
+- **`/home/admin/higgs-audio/higgs_poc.yaml`** — pipeline config with the tts_engine server_args_overrides that are required on sm120.
+- API is **OpenAI-compatible** (`POST /v1/audio/speech`) — confirmed. So once serving, it's a drop-in for the proxy + Coach (no custom Pipecat wrapper needed). **Note: V3 is zero-shot — no preset named voices like Kokoro; voice cloning is via reference audio clip.** This changes the Coach voice-picker design (decide later: hide picker, or use reference-clip "characters").
+
+### The sm120 (RTX PRO 6000 Blackwell) gauntlet — all REAL, all required
+Took a long debugging chain. The opaque `-9 SIGKILL` crashes (no traceback) masked a series of plain toolchain errors. **`CUDA_LAUNCH_BLOCKING=1` is the key** — it converts the async crash into a readable Python error. Root causes, in order found:
+1. **CUDA 12.8 can't target sm120** — needs ≥ 12.9. Installed `cuda-nvcc-13-0` + `cuda-libraries-dev-13-0` (the latter for `cublasLt.h` and other math-lib dev headers). `/usr/local/cuda-13.0`.
+2. **FlashInfer's `is_cuda_version_at_least("12.9")` is buggy for CUDA 13.0** → workaround `FLASHINFER_CUDA_ARCH_LIST="12.0f"`.
+3. **No prebuilt sm120 cubins** → FlashInfer JIT-compiles kernels on first request via **ninja** (must be on PATH — prepend `venv/bin`) + nvcc-13.
+4. **Acoustic-encoder `torch.compile` + warmup crash on sm120** → patched `sglang_omni/models/higgs_tts/stages.py` to skip both, gated by `HIGGS_DISABLE_ACOUSTIC_COMPILE=1`.
+5. Pipeline config needs: `disable_cuda_graph: true`, `disable_flashinfer_autotune: true`, `attention_backend: triton`, `sampling_backend: pytorch`, `mem_fraction_static: 0.50`.
+
+**After all fixes: server starts clean, all 4 stages load, kernels compile.** Verified the model loads (7.6 GB), KV cache allocates, Uvicorn serves on `:8881`.
+
+### The remaining blocker (THE thing to solve next)
+First inference dies with NVRM **`NV_ERR_NO_MEMORY` allocating system memory for the GPU shadow fault buffer** (`_kgmmuClientShadowFaultBufferPagesAllocate`). Confirmed via `sudo dmesg`. **Not a code, config, RAM, or sm120-compute problem** — it failed even with 21 GB free RAM, drained swap, and an empty GPU. vLLM/gemma run fine on the same box (they use plain `cudaMalloc`; sglang-omni uses a GPU-fault-based memory path that needs the shadow fault buffer, which the driver refuses to allocate). Box had 5-day uptime under heavy memory pressure. **Hypothesis: stale driver memory state → reboot should clear it.** Bringing Higgs up FIRST on a fresh boot (before cluster/training reclaim resources) is the test.
+
+### The verified launch command (post-reboot)
+```bash
+bash /home/admin/higgs-audio/start_higgs.sh
+# env baked in: MAX_JOBS=1, PATH=venv/bin:cuda-13.0/bin, CUDA_VISIBLE_DEVICES=1,
+# HIGGS_DISABLE_ACOUSTIC_COMPILE=1, FLASHINFER_CUDA_ARCH_LIST=12.0f, CUDA_HOME=/usr/local/cuda-13.0
+```
+First request JIT-compiles (~1-3 min, cached after). `file ~/higgs_test.wav` → `WAVE audio` = POC achieved.
+
+**Full reproduction + gotchas saved to auto-memory `higgs-audio-sm120-serving`.** If clean-boot retry still hits the fault-buffer error, it's a genuine driver/Blackwell bug → defer to the real Death Star hardware (~2 weeks); the proxy + Coach integration is already staged on the `dev` branches (see entry below).
+
+---
 
 ## 2026-06-29 — Model Evaluation: Minimax 2.7 on Dual RTX Pro 6000 Blackwell
 
@@ -534,6 +525,17 @@ The 6/3 23:05 aivm maintenance reboot took down the **master's LiteLLM proxy** (
 
 ---
 
+## 2026-05-18 - Nano 0 child-node bugfix; cluster inference back to known-good
+
+Squashed bugs and updated the child node on Nano 0. Server inference is working correctly end-to-end again:
+
+- LiteLLM router on the VM (`localhost:4000` / `10.2.35.10:4000`) probes healthy with one loaded model (`gemma-4-26b-a4b-nvfp4`) - confirmed via the Scholarships Tools `/api/inference/discover` probe today as a side-effect of getting the Settings tab working there.
+- Cluster proxy responds to chat completions cleanly (1 model returned, status 200) - verified by direct curl to `/v1/models` and indirectly by the Living Catalog backend (Information Requests endpoint queues items with the model selected).
+
+**Stale defaults cleaned up:** The Scholarships Tools `inference.py` had `10.2.30.28:4000` (legacy Death Star) in the auto-discovery list - dead since the subnet migration. Replaced with `localhost:4000` first, then `10.2.35.10:4000`. Kept the legacy entry as a no-op probe so machines on the old subnet still resolve.
+
+**Open thread:** Death Star migration to `.35.2x` is still TBD with Cody. Today's work doesn't depend on it because the VM is now the cluster master and runs LiteLLM locally.
+
 ## 2026-05-14 - `node.sh` master-role fixes (commit `2bf4714`)
 
 The user had run setup on the VM but the master agent wouldn't come up cleanly. Two real bugs in the master role's lifecycle:
@@ -595,17 +597,6 @@ Commit `5716ba1` adds:
 **Temporary Gemma-4 footprint while Nano 0 orphan VRAM persists:** `gpu_memory_utilization=0.40`, `max_model_len=65536`, `max_num_batched_tokens=4096`. Restore to design `0.85` / `196608` after a reboot or `nvidia-smi --gpu-reset` clears the orphans.
 
 ---
-
-## 2026-05-18 - Nano 0 child-node bugfix; cluster inference back to known-good
-
-Squashed bugs and updated the child node on Nano 0. Server inference is working correctly end-to-end again:
-
-- LiteLLM router on the VM (`localhost:4000` / `10.2.35.10:4000`) probes healthy with one loaded model (`gemma-4-26b-a4b-nvfp4`) - confirmed via the Scholarships Tools `/api/inference/discover` probe today as a side-effect of getting the Settings tab working there.
-- Cluster proxy responds to chat completions cleanly (1 model returned, status 200) - verified by direct curl to `/v1/models` and indirectly by the Living Catalog backend (Information Requests endpoint queues items with the model selected).
-
-**Stale defaults cleaned up:** The Scholarships Tools `inference.py` had `10.2.30.28:4000` (legacy Death Star) in the auto-discovery list - dead since the subnet migration. Replaced with `localhost:4000` first, then `10.2.35.10:4000`. Kept the legacy entry as a no-op probe so machines on the old subnet still resolve.
-
-**Open thread:** Death Star migration to `.35.2x` is still TBD with Cody. Today's work doesn't depend on it because the VM is now the cluster master and runs LiteLLM locally.
 
 ## 2026-05-11 - `.30` → `.35` AI VLAN migration begins; Nano 0 first
 
@@ -716,88 +707,54 @@ Pilot status unchanged: TENTATIVE - awaiting hardware arrival. RTX Pro 6000 Blac
 
 ---
 
-## VM Setup Status (2026-03-05)
+## 2026-04-14 - Background Research: Four-Card Workstation AI Setup (NOT the chosen architecture)
 
-Full status report received. VM is live and healthy.
+> **Status:** Background research only. This was an earlier exploration of a single-machine four-GPU stack. The final Foundation direction is the VM + dual DGX Spark + ZGX Nano topology documented above. Retained here for reference on vLLM/LiteLLM patterns, FP8 deployment, and co-located model tricks that may inform future decisions.
 
-### Infrastructure - Confirmed Running
+### Summary
 
-| Component | Version | Status |
-|-----------|---------|--------|
-| VM (App Server) | - | Running |
-| Git | v2.43.0 | Installed |
-| GitHub CLI (gh) | - | Installed + Authenticated as Howie002 |
-| Docker | v29.3.0 | Installed |
-| Docker Compose | v5.1.0 | Installed |
-| Foundation-Chat Repo | - | Cloned at `/home/aivmadmin/Foundation AI Projects/Foundation Secure Chat` |
+Self-hosted AI inference stack across **4× NVIDIA RTX PRO 6000 Blackwell GPUs** (96 GB VRAM each, 384 GB total) serving models via an OpenAI-compatible API through a **LiteLLM proxy** on port 4000. Ubuntu 24.04, NVIDIA driver 580.126.09, CUDA toolkit 12.8, Python 3.12, vLLM 0.19.0, PyTorch 2.10.0+cu128.
 
-### Containers - Confirmed Running
+### GPU Allocation
 
-| Container | Port | Status | Notes |
-|-----------|------|--------|-------|
-| open-webui | :3000 | Healthy | Foundation Secure Chat UI |
-| kokoro-tts | :8880 | Running | Text-to-speech, CPU mode |
-| searxng | :8888 | Running | Web search |
-| redis | :6379 | Running | Session cache |
-| nginx-proxy-manager | :80/:81/:443 | Running | SSL + reverse proxy |
-| portainer | :9000 | Running | Docker management UI |
-| nginx-ollama | :11434 | **Paused** | Waiting on DGX Spark IPs |
+| GPU | Role |
+|---|---|
+| 0 | Dynamic / reserved - LM Studio, overflow, ad-hoc vLLM, model eval |
+| 1 | Static co-located: Nemotron Nano FP8 (:8001) + GTE-Qwen2-7B embedding (:8011) |
+| 2 | Nemotron Super 49B FP8 Instance A (:8003) |
+| 3 | Nemotron Super 49B FP8 Instance B (:8004) - data-parallel pair with GPU 2 |
 
-### Key Paths
-- **Repo location on VM:** `/home/aivmadmin/Foundation AI Projects/Foundation Secure Chat`
-- **Nginx Proxy Manager UI:** http://\<vm-ip\>:81
-- **Portainer UI:** http://\<vm-ip\>:9000
-- **OpenWebUI:** http://\<vm-ip\>:3000
-- **Config file to update:** `.env` → `DGX_SPARK_0_IP` and `DGX_SPARK_1_IP`
-- **Nginx template:** `configs/nginx-ollama.conf.template` → uncomment DGX Spark 1 entry
+### Models
 
-### Critical First Actions
-1. **Portainer:** Must create admin account within 5 minutes of container start or it locks permanently
-2. **OpenWebUI:** First user to register becomes admin - do this before sharing access
-3. **Docker permissions:** `sudo usermod -aG docker $USER` has been run - takes effect after full logout/reboot
+- **Nemotron Nano** - `nvidia/Llama-3.1-Nemotron-Nano-8B-v1`, FP8 runtime quant, 32k ctx, fast general reasoning
+- **Nemotron Super** - `nvidia/Llama-3_3-Nemotron-Super-49B-v1-FP8` (underscore in ID, not `3.1`), ~50GB weights, FP8 pre-quantized, LiteLLM `least-busy` balances the two GPU instances
+- **GTE-Qwen2-7B** - `Alibaba-NLP/gte-Qwen2-7B-instruct`, MTEB 70.24, co-located on GPU 1, used via `--runner pooling`
 
-### What's Working Right Now
-OpenWebUI is live and usable immediately upon admin account creation. No AI models connected until DGX Sparks are online. Can temporarily connect to external APIs (OpenAI, Anthropic) via OpenWebUI settings as a bridge if needed.
+### Traffic Flow
 
----
+Single LiteLLM proxy at `:4000/v1` routes OpenAI-style calls by `model` name → appropriate vLLM backend. Direct endpoints also exposed per instance. Health checks at `/health` on each port.
 
-## v2 Architecture Decisions
+### Bring-up Gotchas Worth Remembering
 
-### Why VM + Dual DGX Spark vs. single node
-- Separation of concerns: apps and inference scale independently
-- VM snapshots = disaster recovery in minutes
-- Round-robin across 2x GB10 nodes = 2x throughput, automatic failover
-- AMD Box freed up as dedicated staging/testing environment
+- **CUDA toolkit 12.8 required at runtime** - vLLM calls `nvcc` during GPU memory profiling and flashinfer FP8 JIT; driver alone is insufficient
+- **vLLM 0.19.0 flag changes:** `--disable-log-requests` → `--disable-uvicorn-access-log`; `--task embedding` → `--runner pooling`
+- **Venv must live in a space-free path** (e.g., `~/.vllm-venv`) - flashinfer JIT passes include paths to nvcc unquoted, spaces break the compile
+- **NV-Embed-v2 unsupported in vLLM 0.19.0** (NVEmbedModel arch missing) - GTE-Qwen2-7B is a better-scoring drop-in
+- **`--trust-remote-code`** required for both GTE-Qwen2-7B and Nemotron Super
+- **GTE-Qwen2-7B** needs `--hf-overrides '{"is_causal": false}'` to enable bidirectional attention for embeddings
+- Overflow Nano can be registered with LiteLLM live via `POST /model/new` - no proxy restart
 
-### DNS Plan
-- **Production:** ai.txamfoundation.com → VM IP (when v2 migration complete)
-- **Dev/Staging:** aidev.txamfoundation.com → VM IP (for testing before DNS cutover)
-- Nginx Proxy Manager handles SSL termination via Let's Encrypt
+### Startup
 
-### Docker Compose Profile Strategy
-- Default profile: all app containers (OpenWebUI, Kokoro, SearXNG, Redis, Nginx PM, Portainer)
-- `dgx` profile: nginx-ollama load balancer - only starts when DGX Sparks are online
+Windows `start.bat` opens `nvidia-smi` monitor + WSL → `setup.sh` (idempotent) → launches 4 vLLM instances → polls health → starts LiteLLM once all healthy. Cold start 5–10 min (first-run downloads ~70 GB), warm start 2–4 min. Logs per service in `./logs/`.
 
-### Port Security (Action Required)
-The following ports should NOT be exposed publicly - firewall rules needed:
-- `:8880` - Kokoro TTS
-- `:8888` - SearXNG
-- `:6379` - Redis
-- `:9000` - Portainer
+### Why Not Chosen for Foundation
 
-Only `:80` and `:443` (Nginx Proxy Manager) should be public-facing.
+[Fill in when you have a moment - likely: single-machine failure domain, rack/power/cooling footprint, doesn't match the VM + DGX Spark horizontal-scale strategy, ZGX Nano handles the edge/inference role more cleanly]
 
 ---
 
-## Snowflake AI App - Infrastructure Notes
-
-When the Snowflake AI app (Streamlit) is ready to deploy:
-- Add as new Docker container on VM alongside existing services
-- Assign port (e.g., `:8501`)
-- Add proxy host in Nginx Proxy Manager routing to `:8501`
-- Connect to Ollama via `nginx-ollama` upstream (:11434) - same as OpenWebUI
-
----
+**Last Updated:** 2026-04-14
 
 ## DGX Spark 0 (ZGX Nano) - Setup Complete (2026-03-17)
 
@@ -895,55 +852,85 @@ Paste the following into the AI code editor on the project machine to build the 
 
 ---
 
-## 2026-04-14 - Background Research: Four-Card Workstation AI Setup (NOT the chosen architecture)
+## VM Setup Status (2026-03-05)
 
-> **Status:** Background research only. This was an earlier exploration of a single-machine four-GPU stack. The final Foundation direction is the VM + dual DGX Spark + ZGX Nano topology documented above. Retained here for reference on vLLM/LiteLLM patterns, FP8 deployment, and co-located model tricks that may inform future decisions.
+Full status report received. VM is live and healthy.
 
-### Summary
+### Infrastructure - Confirmed Running
 
-Self-hosted AI inference stack across **4× NVIDIA RTX PRO 6000 Blackwell GPUs** (96 GB VRAM each, 384 GB total) serving models via an OpenAI-compatible API through a **LiteLLM proxy** on port 4000. Ubuntu 24.04, NVIDIA driver 580.126.09, CUDA toolkit 12.8, Python 3.12, vLLM 0.19.0, PyTorch 2.10.0+cu128.
+| Component | Version | Status |
+|-----------|---------|--------|
+| VM (App Server) | - | Running |
+| Git | v2.43.0 | Installed |
+| GitHub CLI (gh) | - | Installed + Authenticated as Howie002 |
+| Docker | v29.3.0 | Installed |
+| Docker Compose | v5.1.0 | Installed |
+| Foundation-Chat Repo | - | Cloned at `/home/aivmadmin/Foundation AI Projects/Foundation Secure Chat` |
 
-### GPU Allocation
+### Containers - Confirmed Running
 
-| GPU | Role |
-|---|---|
-| 0 | Dynamic / reserved - LM Studio, overflow, ad-hoc vLLM, model eval |
-| 1 | Static co-located: Nemotron Nano FP8 (:8001) + GTE-Qwen2-7B embedding (:8011) |
-| 2 | Nemotron Super 49B FP8 Instance A (:8003) |
-| 3 | Nemotron Super 49B FP8 Instance B (:8004) - data-parallel pair with GPU 2 |
+| Container | Port | Status | Notes |
+|-----------|------|--------|-------|
+| open-webui | :3000 | Healthy | Foundation Secure Chat UI |
+| kokoro-tts | :8880 | Running | Text-to-speech, CPU mode |
+| searxng | :8888 | Running | Web search |
+| redis | :6379 | Running | Session cache |
+| nginx-proxy-manager | :80/:81/:443 | Running | SSL + reverse proxy |
+| portainer | :9000 | Running | Docker management UI |
+| nginx-ollama | :11434 | **Paused** | Waiting on DGX Spark IPs |
 
-### Models
+### Key Paths
+- **Repo location on VM:** `/home/aivmadmin/Foundation AI Projects/Foundation Secure Chat`
+- **Nginx Proxy Manager UI:** http://\<vm-ip\>:81
+- **Portainer UI:** http://\<vm-ip\>:9000
+- **OpenWebUI:** http://\<vm-ip\>:3000
+- **Config file to update:** `.env` → `DGX_SPARK_0_IP` and `DGX_SPARK_1_IP`
+- **Nginx template:** `configs/nginx-ollama.conf.template` → uncomment DGX Spark 1 entry
 
-- **Nemotron Nano** - `nvidia/Llama-3.1-Nemotron-Nano-8B-v1`, FP8 runtime quant, 32k ctx, fast general reasoning
-- **Nemotron Super** - `nvidia/Llama-3_3-Nemotron-Super-49B-v1-FP8` (underscore in ID, not `3.1`), ~50GB weights, FP8 pre-quantized, LiteLLM `least-busy` balances the two GPU instances
-- **GTE-Qwen2-7B** - `Alibaba-NLP/gte-Qwen2-7B-instruct`, MTEB 70.24, co-located on GPU 1, used via `--runner pooling`
+### Critical First Actions
+1. **Portainer:** Must create admin account within 5 minutes of container start or it locks permanently
+2. **OpenWebUI:** First user to register becomes admin - do this before sharing access
+3. **Docker permissions:** `sudo usermod -aG docker $USER` has been run - takes effect after full logout/reboot
 
-### Traffic Flow
-
-Single LiteLLM proxy at `:4000/v1` routes OpenAI-style calls by `model` name → appropriate vLLM backend. Direct endpoints also exposed per instance. Health checks at `/health` on each port.
-
-### Bring-up Gotchas Worth Remembering
-
-- **CUDA toolkit 12.8 required at runtime** - vLLM calls `nvcc` during GPU memory profiling and flashinfer FP8 JIT; driver alone is insufficient
-- **vLLM 0.19.0 flag changes:** `--disable-log-requests` → `--disable-uvicorn-access-log`; `--task embedding` → `--runner pooling`
-- **Venv must live in a space-free path** (e.g., `~/.vllm-venv`) - flashinfer JIT passes include paths to nvcc unquoted, spaces break the compile
-- **NV-Embed-v2 unsupported in vLLM 0.19.0** (NVEmbedModel arch missing) - GTE-Qwen2-7B is a better-scoring drop-in
-- **`--trust-remote-code`** required for both GTE-Qwen2-7B and Nemotron Super
-- **GTE-Qwen2-7B** needs `--hf-overrides '{"is_causal": false}'` to enable bidirectional attention for embeddings
-- Overflow Nano can be registered with LiteLLM live via `POST /model/new` - no proxy restart
-
-### Startup
-
-Windows `start.bat` opens `nvidia-smi` monitor + WSL → `setup.sh` (idempotent) → launches 4 vLLM instances → polls health → starts LiteLLM once all healthy. Cold start 5–10 min (first-run downloads ~70 GB), warm start 2–4 min. Logs per service in `./logs/`.
-
-### Why Not Chosen for Foundation
-
-[Fill in when you have a moment - likely: single-machine failure domain, rack/power/cooling footprint, doesn't match the VM + DGX Spark horizontal-scale strategy, ZGX Nano handles the edge/inference role more cleanly]
+### What's Working Right Now
+OpenWebUI is live and usable immediately upon admin account creation. No AI models connected until DGX Sparks are online. Can temporarily connect to external APIs (OpenAI, Anthropic) via OpenWebUI settings as a bridge if needed.
 
 ---
 
-**Last Updated:** 2026-04-14
+## v2 Architecture Decisions
 
-## 2026-07-06 - Filed: 07-01 dev-branch fixes + model-load visibility note
-The 2026-07-01 Quick Note (dev-branch commit log, operational gotchas, open issues, model-load visibility feature spec) moved whole into this project: [Cluster-Fixes-and-Model-Load-Visibility-2026-07-01.md](Cluster-Fixes-and-Model-Load-Visibility-2026-07-01.md). Roadmap backlog updated to point at it.
+### Why VM + Dual DGX Spark vs. single node
+- Separation of concerns: apps and inference scale independently
+- VM snapshots = disaster recovery in minutes
+- Round-robin across 2x GB10 nodes = 2x throughput, automatic failover
+- AMD Box freed up as dedicated staging/testing environment
 
+### DNS Plan
+- **Production:** ai.txamfoundation.com → VM IP (when v2 migration complete)
+- **Dev/Staging:** aidev.txamfoundation.com → VM IP (for testing before DNS cutover)
+- Nginx Proxy Manager handles SSL termination via Let's Encrypt
+
+### Docker Compose Profile Strategy
+- Default profile: all app containers (OpenWebUI, Kokoro, SearXNG, Redis, Nginx PM, Portainer)
+- `dgx` profile: nginx-ollama load balancer - only starts when DGX Sparks are online
+
+### Port Security (Action Required)
+The following ports should NOT be exposed publicly - firewall rules needed:
+- `:8880` - Kokoro TTS
+- `:8888` - SearXNG
+- `:6379` - Redis
+- `:9000` - Portainer
+
+Only `:80` and `:443` (Nginx Proxy Manager) should be public-facing.
+
+---
+
+## Snowflake AI App - Infrastructure Notes
+
+When the Snowflake AI app (Streamlit) is ready to deploy:
+- Add as new Docker container on VM alongside existing services
+- Assign port (e.g., `:8501`)
+- Add proxy host in Nginx Proxy Manager routing to `:8501`
+- Connect to Ollama via `nginx-ollama` upstream (:11434) - same as OpenWebUI
+
+---
