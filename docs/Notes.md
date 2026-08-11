@@ -1,5 +1,39 @@
 # AI Distributed Inference Cluster - Notes
 
+## 2026-08-11 - The third embedding replica is blocked twice over: a launch-path kill bug (fixed), and a Nano agent nobody can update remotely (parked)
+
+Set out to close yesterday's box-level embedding SPOF by placing a third `nomic-embed` replica on the Nano. The replica is NOT deployed. What happened instead: the launch itself would have been an outage, the fix for that is shipped to both branches and deployed to the Death Star, and the Nano turned out to be unreachable for code updates without hands on the box. Dominic parked it pending Andrew. Nothing about the fleet was changed except the Death Star's agent (updated + verified, instances untouched).
+
+### Death Star 2 is not "agent down" - the whole box is dark
+Correcting yesterday's framing: `10.2.35.21` gives no ICMP echo, SSH and every probed port closed, ARP resolution FAILED - while `.20`/`.30` answer in under a millisecond on the same segment. On 08-08 it had a healthy agent and 4 idle Blackwells. **Likely benign cause: the DS1→DS2 transfer is in flight** (Roadmap 08-04 item, Andrew expected it to close S10W7) - the box may be powered down or reimaging as part of that. Question for Andrew, not an alarm; but until it answers, DS2 cannot host the embedding replica, and the Roadmap's "agent not answering" wording undersold the state.
+
+### The launch path would have killed the Nano's gemma: pre-launch VRAM reclaim SIGKILLs live models' EngineCore children
+Read before launching, because the Nano's single GPU hosts a live gemma. `_reclaim_vram_before_launch()` protects tracked instances by PID - but the tracked PID is the **APIServer** (it owns the listening port), while the process nvidia-smi actually reports on the GPU is its **EngineCore child**: untracked, name-matched by `_VLLM_PROCESS_FRAGMENTS`, and SIGKILLed by any launch targeting the GPU it lives on. Never bitten in practice only because every launch so far went to an empty GPU (yesterday's `:8024` went to the Death Star's idle GPU 1, and the `target_uuids` filter shielded the rest). On the Nano it fires 100%: launching nomic next to gemma kills gemma's engine.
+
+Worse, it doesn't stop there. Both models would carry relaunch intents in `intended_instances.json`, and each watchdog relaunch runs the same reclaim against the same shared GPU - **the two instances SIGKILL each other's engines in an alternating loop**, including through the mid-load window where the incoming APIServer isn't listening yet and so is invisible to the tracked-PID scan. On an agent with this bug, two models can never stably coexist on one GPU.
+
+**Fix:** children of tracked PIDs are now tracked too (recursive), so a resident model's EngineCore is off-limits. Shipped to **both** branches: `682e953` (main), `7082f9a` (dev cherry-pick). Residual known limit, on the record: the mid-load window above is still theoretically exposed even with the fix (a not-yet-listening APIServer has no tracked parent) - concurrent launches onto one GPU remain a footgun; sequence them.
+
+### Discovered while shipping: the repo is split-brained across branches, and node agents are pinned to different ones
+- **`.20` (Death Star) tracks `dev`** - was at `9963401`; dev carries 8 commits main lacks (watchdog disable, `mode=embedding` proxy flag, Higgs TTS support, dashboard work).
+- **Master (aivm) + `.30` (Nano) track `main`** - which carries 18 commits dev lacks.
+- Consequence already felt today: a production-hazard fix had to be shipped twice, and any fix landed on one branch silently misses nodes pinned to the other. Reconciliation is Andrew's call (dev has his active work); flagged.
+- Also stale on main: `stack_configs.json` still describes the retired nemotron/gte-Qwen2 single-box stacks.
+
+### Death Star deployed + verified; Nano is the blocker
+- **`.20`:** `POST /update/pull?force=true` pulled `9963401 → 7082f9a`, agent self-restarted (execv; instances survive by design, `start_new_session`). Verified by output: all three instance PIDs unchanged (`8022:3273700, 8023:23379, 8024:3272908`), all healthy, 768-dim embeddings still flowing through `:4000`.
+- **`.30`:** agent is `5716ba1` (2026-05-14 - ironically the commit that *introduced* the reclaim), 29 commits behind, **dirty working tree**, and its `/update/pull` predates the `force` stash (06-24) - hard 409, no bypass. No startup auto-pull in that version either, so `/agent/restart` alone reloads the same old code. No SSH from aivm (aivmadmin/admin/dominic all refused; the 08-04 bring-up checklist's "prepare SSH" step was never completed for the GPU nodes). **Do NOT launch anything on the Nano until its code is updated** - any launch through the old agent is the guaranteed gemma-kill + watchdog loop above.
+
+### Runbook to finish (30 seconds of hands + the rest is remote)
+1. Terminal on the Nano (gnome-remote-desktop is running on it): `cd <cluster repo>` (find via `ps -ef | grep agent.py`), then
+   `git pull --ff-only origin main || { git stash push --include-untracked -m pre-update-0811; git pull --ff-only origin main; }`
+2. From aivm: `POST http://10.2.35.30:5000/agent/restart` (execv reloads the pulled code; the live gemma survives).
+3. From aivm: `POST /instances/launch` on `.30` - `nomic-ai/nomic-embed-text-v1.5`, GPU 0, port `8025`, served name `nomic-embed-text-v1-5`, `extra_flags {runner: pooling, trust_remote_code: true, gpu_memory_utilization: 0.03}`. Footprint is ~1.3 GB into 4.2 GB free (unified memory; the 0.15 util on `.20` is a cap, not a reservation - actual use is 1.3 GB there too). vLLM model download ~550 MB on first launch.
+4. `POST /proxy/sync` on the master afterwards (auto-register on launch is not reliable - 08-10 rough edge), then verify: three nomic entries in `litellm/cluster_config.yaml`, cross-box vector consistency (same input on `.20:8022` vs `.30:8025`, cosine ≈ 1), and gemma on `.30` still answering.
+
+### SPOF state at close
+Unchanged from yesterday: instance-level redundancy only, both replicas on `10.2.35.20`. The path to box-level redundancy is fully de-risked and scripted above; it needs either the Nano hands-on step or DS2 back from migration.
+
 ## 2026-08-10 - nomic-embed was a single point of failure, and was also rejecting long inputs
 
 The new Foundation AI Dashboard cluster panel (`/admin/cluster`, feedback #125) surfaced it on its first run: **`gemma-4-26b-a4b-nvfp4` ran on two nodes, `nomic-embed-text-v1-5` on one.** Losing `10.2.35.20` would have taken every embedding in the fleet with it - Living Catalog semantic search over ideas, researchers and foundations, and the Chat KB grounding - while chat kept working, so the failure would have looked like "Living Catalog is broken" rather than "a node is down". Same class of gap Andrew logged for Voicebox on 08-04.

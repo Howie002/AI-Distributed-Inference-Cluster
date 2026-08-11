@@ -3,7 +3,7 @@
 > *Reconciled 2026-07-29 (SB↔repo): the vault copy is canonical. Where both sides had drifted in the same section, the older repo wording was superseded — it remains intact in the repo's git history at the pre-reconciliation commit.*
 
 **Repo:** [github.com/Howie002/AI-Distributed-Inference-Cluster](https://github.com/Howie002/AI-Distributed-Inference-Cluster) (private, active on `dev`)
-**Last Synced:** 2026-08-10 *(embedding redundancy + 2048-token ceiling)*
+**Last Synced:** 2026-08-11 *(reclaim kill-bug fix; third replica scripted, parked on Nano hands)*
 **Current Phase:** v2 Cluster - operational hardening + analytics follow-on
 **Target Production:** Ongoing operational service
 
@@ -11,11 +11,18 @@ Living document. Software feature work in "In Progress" and phased sections belo
 
 ---
 
+## New from 2026-08-11 - launch-path kill bug fixed; third replica scripted but parked
+
+- [x] **Pre-launch VRAM reclaim killed live models' EngineCore children** - any launch onto an occupied GPU SIGKILLed the resident model's engine (tracked-PID protection covered only the APIServer parent). On the Nano's single GPU this made the third-replica launch itself an outage, with a watchdog-driven mutual-kill loop behind it. Fixed on **both** branches (`682e953` main, `7082f9a` dev cherry-pick); deployed + verified on `.20` (instances survived the agent update). Detail in Notes 08-11.
+- [ ] **PARKED (needs Andrew): third nomic replica on the Nano.** Fully scripted in Notes 08-11 - blocked only on a 30-second hands-on `git pull` on the Nano, whose agent (`5716ba1`, 29 commits behind, dirty tree, pre-`force` `/update/pull`, no SSH from aivm) cannot be updated remotely. **Do NOT launch anything on the Nano until its code is updated** - through the old agent the launch kills the live gemma.
+- [ ] **Branch split-brain (Andrew):** `.20` tracks `dev` (8 commits main lacks), master + `.30` track `main` (18 commits dev lacks). Fixes must currently ship twice; reconcile or standardize.
+- [ ] **Mid-load reclaim window (post-fix residual):** a model whose APIServer isn't listening yet is invisible to the tracked-PID scan, so concurrent launches onto one GPU can still kill a loader. Sequence launches; a durable fix needs a launch-in-progress registry.
+
 ## New from 2026-08-10 - embedding redundancy and the 2048-token ceiling
 
 - [x] **nomic-embed had no redundancy at all** (gemma had two nodes, embeddings had one). Second instance launched on the Death Star's idle GPU 1 at `:8024`; failover verified by killing `:8022` and confirming embeddings continued, then restoring it. Both registered.
-- [ ] **Embeddings still have no BOX-level redundancy** - both instances are on `10.2.35.20`. Options: the Nano has only ~4 GB VRAM free so a third instance there risks its gemma; or bring Death Star 2 back (see below). This is the same shape as the Voicebox failover gap logged 08-04, and now applies to Living Catalog's semantic search, a Sept 14 flagship surface.
-- [ ] **Death Star 2 (`10.2.35.21`) agent is not answering on `:5000`.** The box was registered 07-31 with 4x RTX Pro 6000 Blackwell Max-Q idle; today it is unreachable, so it contributes nothing and cannot host the embedding replica that would give box-level redundancy.
+- [ ] **Embeddings still have no BOX-level redundancy** - both instances are on `10.2.35.20`. The Nano path is now de-risked and scripted (08-11 above) but parked on hands; or bring Death Star 2 back (see below). This is the same shape as the Voicebox failover gap logged 08-04, and now applies to Living Catalog's semantic search, a Sept 14 flagship surface.
+- [ ] **Death Star 2 (`10.2.35.21`) is fully dark, not just "agent down"** *(corrected 08-11: no ICMP, all ports closed, ARP FAILED)*. Likely benign - the DS1→DS2 transfer is in flight (08-04 item below) and the box may be powered down for it - but confirm with Andrew. Until it answers it cannot host the embedding replica that would give box-level redundancy.
 - [ ] **`register_with_proxy: true` on `/instances/launch` did not re-register a relaunched instance**; an explicit `POST /proxy/sync` was needed. Either fix the launch path or document that sync always follows a launch.
 - [x] **Confirmed `/proxy/sync` cannot be emptied by the master's blank `/instances`** - it fans out to every node in `node_config.json`, and only writes an empty model list if all nodes fail. Closes the hazard flagged earlier.
 

@@ -48,7 +48,7 @@ Text-to-speech + STT + voice cloning is served by **[Voicebox](https://voicebox.
 |--------|-------|-----|-----|------|--------|
 | Master VM | - | N/A | `10.2.35.10` | Orchestrator (proxy, control agent, dashboard) | Live |
 | Death Star | HP Z8 Fury | 4× RTX Pro 6000 Blackwell (~382 GB total) | `10.2.35.20` | Big compute | Live |
-| **Death Star 2** | *(chassis TBC)* | 4× RTX Pro 6000 Blackwell Max-Q (~382 GB total, confirmed via agent) | **`10.2.35.21`** | Big compute | **Live + registered 2026-07-31** (agent healthy, GPUs idle, no models deployed yet). See Notes.md 2026-07-31. |
+| **Death Star 2** | *(chassis TBC)* | 4× RTX Pro 6000 Blackwell Max-Q (~382 GB total, confirmed via agent) | **`10.2.35.21`** | Big compute | **Live + registered 2026-07-31; fully dark since ≤08-11** (no ICMP/ports - likely powered down for the in-flight DS1→DS2 transfer; confirm with Andrew). See Notes.md 2026-08-11. |
 | Nano 0 / DGX Spark | HP ZGX Nano G1n (`zgx-0d80`) | NVIDIA GB10, 128GB | `10.2.35.30` | Small compute | Live |
 | DGX Spark 1 | HP ZGX Nano G1n | NVIDIA GB10, 128GB | TBD (`10.2.35.3x`) | Small compute | Setup Pending |
 | AMD Box | HP AI Box | AMD 395+, 128GB | TBD | Testing / Staging | Available |
@@ -73,7 +73,7 @@ GPU load dashboards, uptime monitoring, cost tracking, snapshot cadence, model m
 
 ## Key Contacts
 - **Andrew Howerton** - Infrastructure Lead
-- HP Representative (hardware/pilot coordination) - TBD
+- HP Representative (hardware/pilot coordination) - Erik Hawkins (erik-michael.hawkins@hp.com), Jesse Otts (jesse.otts@hp.com)
 - Foundation IT/IS - Jose and team (network, security, VM provisioning)
 
 ## Related Projects
@@ -119,7 +119,7 @@ RTX Pro 6000 Blackwell cards provide substantially more GPU memory than the DGX 
 
 ### Pilot Contacts
 - **Andrew Howerton** - Project Lead
-- HP representative (pilot coordination) - TBD
+- HP representative (pilot coordination) - Erik Hawkins (erik-michael.hawkins@hp.com), Jesse Otts (jesse.otts@hp.com)
 
 ## Future Considerations
 - **ZGX Furry** - 750GB+ unified memory, 1T parameter models, training/fine-tuning capability
