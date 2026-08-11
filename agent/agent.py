@@ -602,6 +602,20 @@ def _reclaim_vram_before_launch(target_gpu_indices: list[int]) -> dict:
             except (TypeError, ValueError):
                 pass
 
+        # The tracked PID is the APIServer (it owns the listening port), but
+        # the process nvidia-smi reports on the GPU is its EngineCore child —
+        # which matches _VLLM_PROCESS_FRAGMENTS and is NOT in tracked_pids.
+        # On a shared or single-GPU node (Nano: one GPU, live gemma) that
+        # made every launch onto an occupied GPU kill the healthy resident
+        # model's engine. Children of tracked instances are just as
+        # off-limits as their parents.
+        for pid in list(tracked_pids):
+            try:
+                for child in psutil.Process(pid).children(recursive=True):
+                    tracked_pids.add(child.pid)
+            except Exception:
+                pass
+
         # VRAM baseline
         try:
             raw = subprocess.run(
