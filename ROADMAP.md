@@ -35,6 +35,31 @@ Living document. Software feature work in "In Progress" and phased sections belo
 - [ ] **Reconcile with the existing multi-instance discussion** (2026-07-16, above) - that thread is about latency/parallel-use contention, not failover, but a second instance placement decision could serve both goals if planned together
 - [ ] Surface Voicebox health/redundancy state on the Foundation AI Dashboard, not just the vLLM cluster state
 
+> [!success] SHIPPED 2026-08-18 - but built as a reverse proxy, not a client-side list
+> `voicebox-failover-proxy` is live on **aivm `10.2.35.10:17600`**, active/passive over
+> `DS2 -> Nano -> DS1`, health-gated, config hot-reloading. **Consumers keep a single
+> `VOICEBOX_BASE_URL`** pointing at it, so the `VOICEBOX_BASE_URLS` list below was NOT built.
+> Reason: Voicebox is stateful across calls (`/generate` -> `/history/{id}` -> `/audio/{id}` must
+> hit the same node), so a client-side list that re-picks per request can submit to one node and
+> fetch from another - a 404 that only appears during failover. One proxy holding one active
+> upstream makes that unrepresentable, and avoids three drifting implementations across two
+> languages. Trade-off accepted: aivm is now in the TTS path. Detail in Notes 08-18.
+>
+> ⚠️ **Routing works; the node behind it does not.** DS2's Voicebox fails every generate with
+> `Failed to find C compiler ... triton.knobs.build.impl` - same failure direct to `10.2.35.21`, so
+> not a proxy fault. `/health` returns 200 throughout, so nothing detects it. **Fleet TTS is down.**
+
+**Andrew (2026-08-18) - direction set: build DYNAMIC FAILOVER ACROSS IPs.** Do this as part of the VM-side work rather than leaving Voicebox pinned to one address. Andrew will add a Voicebox instance to a Nano later so DS2 can fail over to it once DS1 is returned. This resolves "decide the redundancy shape" above: the shape is **client-side failover over an ordered list of Voicebox endpoints**, not a single base URL.
+
+Why it can't ride on the existing cluster plumbing: Voicebox is a **custom API, not OpenAI-compatible**, so LiteLLM on the master (`10.2.35.10:4000`) does not and cannot load-balance it the way it does vLLM models. Failover therefore has to live in the consumer/proxy layer. Consequence: every consumer needs the same failover behaviour, which argues for one shared client rather than three copies.
+
+- [x] ~~**Replace the single base URL with an ordered endpoint list.**~~ **Superseded by the proxy** - the ordered list lives in the proxy's `config.json`, and consumers keep one URL. The Foundation AI Dashboard already has the right seam - `src/lib/voicebox.ts` reads `VOICEBOX_BASE_URL` (currently a single value defaulting to the retired Death Star). Generalise to something like `VOICEBOX_BASE_URLS` (comma-separated, tried in order), keeping single-value input working so nothing breaks on rollout.
+- [x] **Health-gate the selection, don't just catch errors.** Done - `GET /health` probed every 5s, selection is pre-flight. Deliberately ignores the body's `model_loaded` flag (reflects only the qwen slot). ⚠️ Insufficient in practice: DS2 answers 200 while failing every job. Voicebox exposes `/health`; prefer probing it and caching the result briefly over discovering a dead node via a failed `/speak` (TTS calls are async submit/poll, so a mid-flight failure is more expensive to recover than a pre-flight check).
+- [~] **Target topology once the Nano lands:** primary `10.2.35.21` (DS2), secondary the Nano. `Nano 1 (Dark Helmet)` at `10.2.35.30` is **already a registered cluster node**, so it is the obvious host - no new network work needed. Confirm the Nano can actually run the Voicebox container (GPU/VRAM and `nvidia-container-toolkit`) before committing; the DS1 instance sits on a 97 GB Blackwell card using ~15.6 GB, which a Nano will not match.
+- [x] ~~**Voice-profile parity is the hard part, not the routing.**~~ **Wrong call, resolved 08-18:** parity was fine - all 10 profiles including the shared George default survived on DS2. **The engine was the hard part** (triton/C compiler). Neither `/health` nor profile presence would have surfaced it. Failover is only real if the standby has the same cloned voices. `voicebox-data` (the profile/DB volume) is flagged irreplaceable in [[DS2-Migration-Instructions-2026-07-31]] - a second instance needs that volume replicated and kept in sync, or failover silently serves the wrong/missing voices. Decide sync mechanism (periodic volume copy vs shared storage) alongside the routing work.
+- [x] **Applied to all four consumer processes** (HyperFrames :3013, SOP Builder :3012, Coach frontend :3001 + backend :7860), each confirmed by reading the running process env, not the file. SOP Builder was a fifth consumer found by audit today; the Dashboard seam was not needed once the proxy took the single-URL shape. - Foundation Coach, HyperFrames, and Foundation AI Dashboard. The migration doc originally named only the first two; the Dashboard was found by audit on 2026-08-18. Re-audit before wiring, since a missed consumer keeps a hardcoded single IP and defeats the failover.
+- [~] **Acceptance:** failover itself was exercised both directions at build time via `/__failover/disable|enable`. **NOT yet acceptance-passed end to end**, because no upstream can currently produce speech (see the C-compiler blocker). The degraded-state indicator on the Dashboard is still unbuilt - and today shows why it matters: a healthy-looking proxy in front of a node that fails every job. ~~kill the primary Voicebox container~~ and confirm each consumer still produces speech with the expected voice, with a visible degraded-state indicator on the Foundation AI Dashboard rather than a silent switch.
+
 ---
 
 ## New from 2026-07-30 - Death Star 2 onboarding

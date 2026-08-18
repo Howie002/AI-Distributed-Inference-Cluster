@@ -5,7 +5,7 @@ model_list:
   - model_name: gemma-4-26b-a4b-nvfp4
     litellm_params:
       model: openai/gemma-4-26b-a4b-nvfp4
-      api_base: http://10.2.35.20:8023/v1
+      api_base: http://10.2.35.21:8023/v1
       api_key: none
   - model_name: gemma-4-26b-a4b-nvfp4
     litellm_params:
@@ -15,13 +15,13 @@ model_list:
   - model_name: nomic-embed-text-v1-5
     litellm_params:
       model: openai/nomic-embed-text-v1-5
-      api_base: http://10.2.35.20:8022/v1
+      api_base: http://10.2.35.21:8022/v1
       api_key: none
       encoding_format: float
   - model_name: nomic-embed-text-v1-5
     litellm_params:
       model: openai/nomic-embed-text-v1-5
-      api_base: http://10.2.35.20:8024/v1
+      api_base: http://10.2.35.21:8024/v1
       api_key: none
       encoding_format: float
 
