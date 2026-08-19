@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import type { NodeConfig, MetricsQueryResult, MetricsGpuBucket, MetricsModelBucket } from "@/lib/types";
 import { createNodeApi } from "@/lib/api";
+import { useAvgGpuUtil24h } from "@/lib/useAvgGpuUtil";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, Legend, CartesianGrid,
   BarChart, Bar,
@@ -185,6 +186,10 @@ export function AnalyticsView({ nodes }: Props) {
     return { totalRequests: tr, totalPromptTokens: tp, totalGenTokens: tg, backlogMax: bl };
   }, [results]);
 
+  // Trailing-24h average GPU utilization — always 24h, independent of the range
+  // picker above, so it reads the same here as on the GPU view.
+  const avgUtil = useAvgGpuUtil24h(nodes);
+
   const anyData = utilRows.length > 0 || reqRows.length > 0;
 
   return (
@@ -223,7 +228,12 @@ export function AnalyticsView({ nodes }: Props) {
       </div>
 
       {/* ── Totals strip ────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+        <TotalTile
+          label="Avg GPU util"
+          value={avgUtil.avgPct == null ? "—" : `${Math.round(avgUtil.avgPct)}%`}
+          sublabel={avgUtil.avgPct == null ? "no samples yet" : `trailing 24h · ${avgUtil.gpuCount} GPU${avgUtil.gpuCount === 1 ? "" : "s"}`}
+        />
         <TotalTile label="Requests"   value={totalRequests.toLocaleString()}  sublabel={`in window · ${range}`} />
         <TotalTile label="Prompt tokens" value={formatNum(totalPromptTokens)} sublabel="sum of deltas" />
         <TotalTile label="Generation tokens" value={formatNum(totalGenTokens)} sublabel="sum of deltas" />

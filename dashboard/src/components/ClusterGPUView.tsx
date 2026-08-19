@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { GPU, ClusterNodeStatus, NodeConfig, PendingLaunch, VLLMInstance } from "@/lib/types";
 import { LaunchLogModal } from "./LaunchLogModal";
+import { useAvgGpuUtil24h } from "@/lib/useAvgGpuUtil";
 
 function vramPct(gpu: GPU) { return gpu.vram_total_mb > 0 ? Math.round((gpu.vram_used_mb / gpu.vram_total_mb) * 100) : 0; }
 function vramGB(mb: number) { return (mb / 1024).toFixed(1); }
@@ -134,6 +135,10 @@ export function ClusterGPUView({ nodeStatuses, pendingLaunches = [] }: Props) {
   const usedVramMb  = flatGpus.reduce((a, fg) => a + fg.gpu.vram_used_mb, 0);
   const onlineCount = nodeStatuses.filter(ns => !!ns.status).length;
 
+  // Trailing-24h average GPU utilization across the whole cluster (same stat as
+  // the Analytics tab; reads the historical metrics, not the live snapshot).
+  const avgUtil = useAvgGpuUtil24h(nodeStatuses.map(ns => ns.node));
+
   const expandedEntry = expanded
     ? flatGpus.find(fg => fg.nodeKey === expanded.nodeKey && fg.gpu.index === expanded.gpuIndex) ?? null
     : null;
@@ -148,6 +153,13 @@ export function ClusterGPUView({ nodeStatuses, pendingLaunches = [] }: Props) {
           <span>{flatGpus.length} GPU{flatGpus.length !== 1 ? "s" : ""}</span>
           <span className="text-slate-700">·</span>
           <span>{vramGB(usedVramMb)} / {vramGB(totalVramMb)} GB used</span>
+          <span className="text-slate-700">·</span>
+          <span title="Fleet-wide average GPU utilization over the last 24 hours">
+            avg 24h util{" "}
+            <span className="text-slate-200 font-semibold">
+              {avgUtil.avgPct == null ? "—" : `${Math.round(avgUtil.avgPct)}%`}
+            </span>
+          </span>
         </div>
       </div>
 
