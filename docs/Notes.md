@@ -1,5 +1,24 @@
 # AI Distributed Inference Cluster - Notes
 
+## 2026-08-19 - Dashboard: average GPU utilization (trailing 24h) stat
+
+Dominic asked for an average-GPU-utilization-over-24-hours statistic, on the Analytics tab too. The
+metrics to do it already existed - the Analytics "GPU Utilization (%)" chart reads bucketed
+`util_pct_avg` from each node's `GET /metrics/query` - so this is a headline number over that same data,
+not new instrumentation.
+
+- New `dashboard/src/lib/useAvgGpuUtil.ts` → `useAvgGpuUtil24h(nodes)`: fetches `metrics("24h","1h")`
+  per node and averages every non-null `util_pct_avg` across all nodes/GPUs into one fleet-wide percent.
+  **Always 24h, independent of the Analytics range picker**, so it reads the same on both surfaces.
+  Polls every 60s; a node that's down or has no samples simply doesn't contribute.
+- **GPU view** (overview tab): "avg 24h util NN%" in the GPU Cluster header, beside nodes/GPUs/VRAM.
+- **Analytics tab**: an "Avg GPU util" tile in the totals strip ("trailing 24h · N GPUs").
+
+Verified against live agents: DS2 returns 100 GPU buckets (4 GPUs × 25h), Nano 25, master 0 (no GPU) -
+the cluster is mostly idle so the number sits low (~1%), which is accurate. Shipped `c65ef41`; cluster
+dashboard rebuilt + restarted on :3005 (had to reap an orphaned 2-day-old `next-server` still holding
+the port - the stop script's tracked PID had left its child behind).
+
 ## 2026-08-19 - Fleet TTS is back, and the proxy now checks capability, not just liveness
 
 The 08-18 blocker is closed. DS2's Voicebox triton "no C compiler" failure was
