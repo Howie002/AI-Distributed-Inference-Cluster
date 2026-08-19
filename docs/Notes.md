@@ -1,5 +1,48 @@
 # AI Distributed Inference Cluster - Notes
 
+## 2026-08-19 - Fleet TTS is back, and the proxy now checks capability, not just liveness
+
+The 08-18 blocker is closed. DS2's Voicebox triton "no C compiler" failure was
+fixed **on the box overnight** (Andrew's domain - he owns the DS1 wipe/DS2
+transfer), and I verified it end-to-end this morning rather than trusting
+`/health`:
+
+- George default `501cf0ee` generated real PCM: mean −20 dB / peak −6 dB (not
+  silence), and duration scaled with text (1.74s for a 5-word line, 6.98s for a
+  long one, so it is not a canned clip).
+- Voicebox's own Whisper STT transcribed both clips back **verbatim**.
+- The same worked **through the proxy** at `10.2.35.10:17600`, not just direct to
+  `.21`.
+
+### The real fix on our side: a capability deep check in the proxy
+
+08-18's lesson was that `/health == 200` told us nothing about whether the node
+could actually generate. The proxy now runs a second, independent probe
+(`deep_check_*` in `config.json`, hot-reloaded, default every 120s): it actually
+`POST /generate`s a tiny clip on each **live** node, polls it to completion, and
+confirms real audio bytes come back (`>= deep_check_min_bytes`). A live-but-
+incapable node is demoted below any capable node, logged loudly, and dropped from
+`active` (which goes `null` as a visible alarm) - but still receives traffic as a
+**last resort**, so the deep check can never hard-block routing. `status` now
+exposes `active` / `serving` / `degraded` plus per-node `capable` /
+`deep_fail_count` / `deep_last`.
+
+Tested against real DS2 before deploying: forced the failure path (impossible
+min-bytes floor) and confirmed demotion → `active:null`, `degraded:true`, traffic
+still forwarding; then confirmed auto-recovery when the floor was restored.
+
+**What's still thin:** nothing yet scrapes `/__failover/status` to page a human -
+the deep check makes the outage *visible*, but a person still has to look. Wiring
+`degraded:true` / `active:null` into the dashboard telemetry (or a cron alert) is
+the natural next step. And there is still **no real failover target**: DS1 is now
+`enabled:false` in the config (box returning to HP), and the Nano entry is a
+placeholder with no Voicebox installed - so DS2 is a singleton. Standing up
+Voicebox on the Nano is the redundancy fix.
+
+Also done today: the proxy finally has a git repo -
+`github.com/Howie002/voicebox-failover-proxy` (private, `main`), with a README
+documenting the two-layer health model.
+
 ## 2026-08-18 - DS1 went dark and the fleet did not notice: a Voicebox failover proxy, and a cluster that re-pooled itself
 
 Death Star 1 (`10.2.35.20`) is being returned to HP. Today it stopped answering - no ICMP, agent
