@@ -1,5 +1,22 @@
 # AI Distributed Inference Cluster - Notes
 
+## 2026-08-19 - DS1 fully removed from the cluster (never coming back)
+
+Dominic: DS1 (`10.2.35.20`, "Z8 Workstation / Death Star") is returned to HP and will never be plugged
+in again, so it should not be part of the cluster dashboard anymore. Removed it everywhere it was still
+listed:
+
+- **Node registry:** `DELETE http://10.2.35.10:5000/nodes/10.2.35.20` → node_config.json now holds only
+  Nano + DS2, and the in-memory `_REGISTERED_CHILDREN` entry is cleared so it can't be rebuilt by a
+  stray re-register (moot anyway — it's gone). `node_config.json` is gitignored (per-node runtime), so
+  there's nothing to commit there; the master's live copy is the source of truth and the dashboard
+  reads `/nodes` live, so DS1 disappeared immediately with no rebuild. Ran `POST /proxy/sync` after
+  (litellm `cluster_config.yaml` already had no `.20` — the agent re-pooled when DS1 went dark 08-18).
+- **Voicebox failover proxy:** dropped the DS1 upstream from `config.json` entirely (it was already
+  `enabled:false`). Hot-reloaded; status now shows only DS2 (active) + the Nano placeholder.
+- **Docs:** Overview hardware table row → REMOVED; the TTS section (which still named DS1 as the live
+  Voicebox host) updated to DS2 + the failover proxy.
+
 ## 2026-08-19 - Dashboard: average GPU utilization (trailing 24h) stat
 
 Dominic asked for an average-GPU-utilization-over-24-hours statistic, on the Analytics tab too. The

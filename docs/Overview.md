@@ -32,23 +32,23 @@ Multi-node GPU cluster managed via the cluster dashboard (`AI-Distributed-Infere
 
 ## Services on the Cluster
 
-### TTS / Voice — Voicebox (live 2026-07-08)
-Text-to-speech + STT + voice cloning is served by **[Voicebox](https://voicebox.sh)** (open-source, local-first voice studio), running **headless in Docker on the Death Star (`10.2.35.20`), GPU 0**. This replaced the abandoned Higgs Audio V3 effort (Higgs hit an unrecoverable sm120 driver/kernel wall; see Notes.md).
+### TTS / Voice — Voicebox (live 2026-07-08; moved to DS2 + failover proxy 2026-08-18)
+Text-to-speech + STT + voice cloning is served by **[Voicebox](https://voicebox.sh)** (open-source, local-first voice studio), running **headless in Docker on Death Star 2 (`10.2.35.21`)**. It originally ran on DS1 (`10.2.35.20`); that box was decommissioned and returned to HP (2026-08-19), and Voicebox moved to DS2. This replaced the abandoned Higgs Audio V3 effort (Higgs hit an unrecoverable sm120 driver/kernel wall; see Notes.md).
 
-- **Endpoint:** `http://10.2.35.20:17600/speak` (TTS), `/transcribe` (STT), plus an MCP server. Consumed **directly** by VM webapps — this is a **custom API, not OpenAI `/v1/audio/speech`**, so it deliberately does **not** route through the LiteLLM proxy.
-- **GPU:** runs on the Blackwell card. The sm120 kernel gap that killed Higgs is resolved by the container's torch (`2.13+cu130`, ships `sm_120` kernels). `/health` reports `backend_variant: cuda`.
-- **Engines:** 7 (kokoro, qwen, qwen_custom_voice, luxtts, chatterbox, chatterbox_turbo, tada). Each `/speak` needs a **voice profile** (`POST /profiles`); `/speak` is **async** (returns `generating`, writes `output/<id>.wav`).
-- **Ops:** `~/voicebox/{start,stop}_voicebox.sh`; reboot-persistent (`restart: unless-stopped` + docker enabled). Deployment detail + API gotchas in Notes.md 2026-07-08 (PM).
+- **Endpoint:** consumers use the **failover proxy at `http://10.2.35.10:17600`** (aivm), NOT a node directly — `/generate` (TTS, async), `/captures` (STT), `/profiles`. It is a **custom API, not OpenAI `/v1/audio/speech`**, so it deliberately does **not** route through the LiteLLM proxy. The proxy is active/passive over DS2 → Nano and includes a capability deep-check; see `voicebox-failover-proxy` and Notes.md 2026-08-18/08-19.
+- **GPU:** runs on a Blackwell card. The sm120 kernel gap that killed Higgs is resolved by the container's torch (ships `sm_120` kernels). `/health` reports `backend_variant: cuda`.
+- **Engines:** clone-only voices via `chatterbox`/`chatterbox_turbo` (qwen/kokoro paths retired 2026-08-10). Each `/generate` needs a **voice profile** (`POST /profiles`); `/generate` is **async** (returns `generating`, then poll `/history/{id}`, fetch `/audio/{id}` on the same node).
+- **Ops:** on DS2, `~/voicebox/{start,stop}_voicebox.sh` (reboot-persistent). The failover proxy on aivm is a user-crontab (`@reboot` + `*/2` watchdog); give it a systemd unit when someone can sudo.
 
 ## Hardware Fleet
 
-> ⚠️ This table is known stale in places (e.g., "VM Host: TBD" - the VM has been live at `10.2.35.10` since May) and hasn't had a full reconciliation pass. The **Death Star** and **Death Star 2** rows below are current as of 2026-07-31; treat the rest with caution until reconciled against Notes.md's dated entries.
+> ⚠️ This table is known stale in places (e.g., "VM Host: TBD" - the VM has been live at `10.2.35.10` since May) and hasn't had a full reconciliation pass. The Death Star rows are current as of 2026-08-19; treat the rest with caution until reconciled against Notes.md's dated entries.
 
 | Device | Model | GPU | IP | Role | Status |
 |--------|-------|-----|-----|------|--------|
 | Master VM | - | N/A | `10.2.35.10` | Orchestrator (proxy, control agent, dashboard) | Live |
-| Death Star | HP Z8 Fury | 4× RTX Pro 6000 Blackwell (~382 GB total) | `10.2.35.20` | Big compute | Live |
-| **Death Star 2** | *(chassis TBC)* | 4× RTX Pro 6000 Blackwell Max-Q (~382 GB total, confirmed via agent) | **`10.2.35.21`** | Big compute | **Live + registered 2026-07-31; fully dark since ≤08-11** (no ICMP/ports - likely powered down for the in-flight DS1→DS2 transfer; confirm with Andrew). See Notes.md 2026-08-11. |
+| ~~Death Star (DS1)~~ | HP Z8 Fury | 4× RTX Pro 6000 Blackwell (~382 GB total) | `10.2.35.20` | Big compute | **REMOVED 2026-08-19** — returned to HP, will not be plugged in again; deregistered from the node registry + failover proxy. |
+| **Death Star 2 (DS2)** | *(chassis TBC)* | 4× RTX Pro 6000 Blackwell Max-Q (~382 GB total) | **`10.2.35.21`** | Big compute | **Live — the permanent big-compute unit** (hosts gemma + both nomic replicas + Voicebox). |
 | Nano 0 / DGX Spark | HP ZGX Nano G1n (`zgx-0d80`) | NVIDIA GB10, 128GB | `10.2.35.30` | Small compute | Live |
 | DGX Spark 1 | HP ZGX Nano G1n | NVIDIA GB10, 128GB | TBD (`10.2.35.3x`) | Small compute | Setup Pending |
 | AMD Box | HP AI Box | AMD 395+, 128GB | TBD | Testing / Staging | Available |
