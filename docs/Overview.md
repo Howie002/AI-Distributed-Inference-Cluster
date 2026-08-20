@@ -42,17 +42,17 @@ Text-to-speech + STT + voice cloning is served by **[Voicebox](https://voicebox.
 
 ## Hardware Fleet
 
-> ⚠️ This table is known stale in places (e.g., "VM Host: TBD" - the VM has been live at `10.2.35.10` since May) and hasn't had a full reconciliation pass. The Death Star rows are current as of 2026-08-19; treat the rest with caution until reconciled against Notes.md's dated entries.
+> ⚠️ This table is known stale in places (e.g., "VM Host: TBD" - the VM has been live at `10.2.35.10` since May) and hasn't had a full reconciliation pass. The **Death Star** rows are current as of 2026-08-19 and **Lone Starr** as of 2026-08-20; treat the rest with caution until reconciled against Notes.md's dated entries.
 
 | Device | Model | GPU | IP | Role | Status |
 |--------|-------|-----|-----|------|--------|
 | Master VM | - | N/A | `10.2.35.10` | Orchestrator (proxy, control agent, dashboard) | Live |
 | ~~Death Star (DS1)~~ | HP Z8 Fury | 4× RTX Pro 6000 Blackwell (~382 GB total) | `10.2.35.20` | Big compute | **REMOVED 2026-08-19** — returned to HP, will not be plugged in again; deregistered from the node registry + failover proxy. |
-| **Death Star 2 (DS2)** | *(chassis TBC)* | 4× RTX Pro 6000 Blackwell Max-Q (~382 GB total) | **`10.2.35.21`** | Big compute | **Live — the permanent big-compute unit** (hosts gemma + both nomic replicas + Voicebox). |
-| Nano 0 / DGX Spark | HP ZGX Nano G1n (`zgx-0d80`) | NVIDIA GB10, 128GB | `10.2.35.30` | Small compute | Live |
-| DGX Spark 1 | HP ZGX Nano G1n | NVIDIA GB10, 128GB | TBD (`10.2.35.3x`) | Small compute | Setup Pending |
+| **Death Star 2 (DS2)** | **HP Z8 Fury G5 Workstation** (SKU `4Z3K7AV`, Xeon w5-3433 32c, 62 GiB RAM; chassis confirmed via DMI 2026-08-18) | 4× RTX Pro 6000 Blackwell Max-Q (~382 GB total, confirmed via agent) | **`10.2.35.21`** | Big compute | **Live — the permanent big-compute unit** (hosts gemma + both nomic replicas + Voicebox); all three vLLM instances serving + load-balancing verified 2026-08-18. |
+| **Nano 0** / DGX Spark (**Dark Helmet**) | HP ZGX Nano G1n (`zgx-0d80`) | NVIDIA GB10, 128GB | `10.2.35.30` | Small compute | Live |
+| **Lone Starr** / DGX Spark 1 | HP ZGX Nano G1n (`zgx-0f1e`) | NVIDIA GB10, 128GB | `10.2.35.31` | Small compute | **Setup In Progress** (2026-08-18) - up, SSH access confirmed, currently at Andrew's desk; bring-up checklist underway before move to the server room. Registered in the cluster node registry (observed via `GET /nodes` 2026-08-20). |
 | AMD Box | HP AI Box | AMD 395+, 128GB | TBD | Testing / Staging | Available |
-| Z Workstation (pilot) | HP Z Workstation | 4× RTX Pro 6000 Blackwell | TBD | Pilot - Snowflake AI | TENTATIVE - possibly the same unit as Death Star 2; not yet confirmed distinct (see Notes.md 2026-07-30) |
+| Z Workstation (pilot) | HP Z Workstation | 4× RTX Pro 6000 Blackwell | — | Pilot - Snowflake AI | **RESOLVED / MOOT 2026-08-18 (Andrew):** purchase decision changed. **Death Star 2 is the final unit and is being kept; Death Star 1 goes back.** The earlier "is DS2 the same unit as the pilot?" question no longer gates anything - DS2 is permanent either way. |
 
 ## Infrastructure Phases
 
@@ -99,7 +99,9 @@ GPU load dashboards, uptime monitoring, cost tracking, snapshot cadence, model m
 
 > Update specs once hardware arrives.
 
-### Purchase Plan (If Validated)
+### Purchase Plan (If Validated) — ⚠️ SUPERSEDED 2026-08-18
+
+> **Do not plan from the table below.** Andrew changed the purchase decision: **Death Star 2 (4× RTX Pro 6000 Blackwell Max-Q) is the final kept unit and Death Star 1 is being returned** - DS2 is near spec-for-spec identical to DS1. The "2 units × 2 GPUs each" shape below never happened; anything reasoning from it (e.g. inferring unit identity from GPU count) will reach the wrong conclusion.
 - **Units:** 2× HP Z Workstations
 - **GPUs per unit:** 2× NVIDIA RTX Pro 6000 Blackwell
 - **Rationale:** Distributed across two machines for redundancy; expandable to 4 cards per machine if needed

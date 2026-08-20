@@ -79,6 +79,22 @@ Also done today: the proxy finally has a git repo -
 `github.com/Howie002/voicebox-failover-proxy` (private, `main`), with a README
 documenting the two-layer health model.
 
+## 2026-08-18 (later 2) - Lone Starr (DGX Spark 1) bring-up started
+
+The fleet's second DGX Spark node - listed in Overview.md as "DGX Spark 1, Setup Pending" - is now up and named **Lone Starr** (hostname `zgx-0f1e`). SSH access from Andrew's work laptop confirmed working at `10.2.35.31` (DHCP - can drift; see [[../../../1. Quick Notes/SSH Setup - Work Laptop to This Machine|SSH Setup - Work Laptop to This Machine]] for the laptop-side setup). Currently sitting at Andrew's desk; plan is to complete the [[Node-Bring-Up-Checklist-2026-08-04|standard bring-up checklist]] (Claude CLI, VS Code, Obsidian, then cluster agent/`node.sh setup`) before moving it to the server room. Claude CLI install command given (native installer, `curl -fsSL https://claude.ai/install.sh | bash`); remaining checklist steps not yet done.
+
+## 2026-08-18 (later) - Death Star 2 unresponsive after BIOS (black screen): NVIDIA driver/kernel mismatch from unattended-upgrades
+
+DS2 (`10.2.35.21`) rebooted to BIOS-then-black-screen with no video output, right after Andrew was doing vLLM proxy work - timing was coincidental, not causal. Diagnosis (all done live over SSH, not physically at the box):
+
+- SSH (`22`) was reachable throughout, proving the OS booted fine - this was a display/GPU-driver problem, not a boot hang.
+- `nvidia-smi` couldn't talk to the driver; `lsmod`/journalctl showed no NVRM/Xid activity at all, meaning the module never loaded this boot.
+- Root cause, found in `/var/log/unattended-upgrades/unattended-upgrades.log`: an overnight auto-update (07:02-07:14) bumped the kernel to `6.17.0-1032-oem` and auto-removed the old kernel packages, but **held back every `nvidia-*-580` package** (driver, kernel module, xorg driver) instead of upgrading them in the same run. No driver built for the new kernel → no GPU framebuffer → black screen at the exact point BIOS hands off to the OS display driver.
+- **Mid-fix near-miss:** with no graphical session ever succeeding at the console, GDM's idle-suspend policy almost put the box to sleep during the SSH session, which would have required physical hands to wake it. Masked permanently: `sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`.
+- **Fix:** targeted `sudo apt install` of the matching `linux-modules-nvidia-580-open-oem-24.04c` (and the rest of the 580 driver stack) rather than a full `apt full-upgrade` of all 223 pending packages - kept the blast radius to just the NVIDIA stack. Confirmed live via `sudo modprobe nvidia && nvidia-smi` (all 4 RTX PRO 6000 Blackwell GPUs back, driver `580.173.02`, CUDA 13.0) before rebooting to validate the actual boot path.
+- **Not yet confirmed:** whether the reboot brought the physical display back, whether `vllm-cluster-agent`/`vllm-cluster-dashboard` came up healthy after, and whether DS2's vLLM model instances (gemma `:8023`, nomic-embed `:8022`) need relaunching - none were running when last checked.
+- **Fleet-wide follow-up worth deciding:** unattended-upgrades can repeat this on any GPU node with the same auto-update policy (partial kernel bump without the matching driver). Options: hold `nvidia-*`/`linux-modules-nvidia-*` from unattended-upgrades, or add a post-update health check.
+
 ## 2026-08-18 - DS1 went dark and the fleet did not notice: a Voicebox failover proxy, and a cluster that re-pooled itself
 
 Death Star 1 (`10.2.35.20`) is being returned to HP. Today it stopped answering - no ICMP, agent
