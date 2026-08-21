@@ -1,5 +1,50 @@
 # AI Distributed Inference Cluster - Notes
 
+## 2026-08-21 - IndexTTS 2.5 captured as an unverified TTS evaluation candidate
+
+Processed from the Personal Vault Quick Note `Index tts 2.5 - add to tech stack and make a note to add to foundation tts work.md`.
+
+- **Source:** https://huggingface.co/IndexTeam/IndexTTS-2.5
+- **Status:** Candidate only. IndexTTS 2.5 has not been installed, benchmarked, security-reviewed, license-reviewed, integrated with Voicebox, or adopted by the Foundation.
+- **Current production boundary:** Voicebox remains the Foundation's live TTS/STT service and the failover proxy remains the supported consumer endpoint. This capture does not change production architecture or the Foundation AI Dashboard.
+- **Evaluation intent:** determine whether IndexTTS 2.5 offers a meaningful quality, latency, controllability, language, cloning, or operational advantage over the currently supported Voicebox engines before considering any integration.
+- **Minimum adoption gate:** verify license and commercial-use terms; model provenance; hardware/VRAM and Blackwell compatibility; offline/local operation; model size and startup time; warm and concurrent latency; audio quality; voice consistency; cloning/privacy implications; API or sidecar fit; and a rollback path that leaves Voicebox production service unaffected.
+
+## 2026-08-20 - Two agent bugs found onboarding Lone Starr: a self-kill and a watchdog load-race
+
+*Moved here from Quick Notes 2026-08-20. Found while onboarding the new DGX Spark node "Lone
+Starr" (`10.2.35.31`, `zgx-0f1e`) and attempting to co-host `gemma-4-26b-a4b-nvfp4` alongside its
+`nomic-embed-text-v1-5` replica on the node's single unified-memory GPU.*
+
+**1. Reclaim step could SIGKILL the control agent itself - fixed this session.**
+`_reclaim_vram_before_launch()`'s straggler-kill loop matches GPU compute processes against
+`_VLLM_PROCESS_FRAGMENTS = ("vllm", "VLLM", "EngineCore", "multiprocessing")`. The agent's own
+interpreter path (`~/.vllm-venv/bin/python`) contains "vllm," and the agent itself shows up as a
+tiny GPU compute process (~170MB, from pynvml/GPU-status queries) once it has queried GPU stats.
+Its own PID was never added to `tracked_pids` (only vLLM *instance* PIDs were), so any launch onto
+an occupied GPU could cause the agent to recognize and kill itself. **Fix applied:** added
+`os.getpid()` to `tracked_pids` in that function.
+
+**2. Watchdog has no grace period for a fresh, still-loading launch - root cause of a real crash
+loop, NOT yet fixed.** `_instance_watchdog_tick()` treats a model as "missing" the instant its
+launch intent is recorded but its port isn't bound yet - normal for any slow-loading model.
+Gemma's 17.5GB NVFP4 checkpoint takes 60s+/shard to load from local EXT4 (prefetch disabled, not a
+network FS). Within ~30-45s the watchdog sees port 8023 unbound, assumes missing, and relaunches -
+that second call's own reclaim step then kills the *first* attempt's still-loading EngineCore
+(untracked because it hasn't bound its port either), and both partially load before failing.
+Repeats per the backoff schedule (`_RESTART_BACKOFF_S = [30, 120, 600]`) until "abandoned,"
+compounding memory usage and producing misleading "not enough free memory" errors that are
+actually a symptom of overlapping load attempts, not a genuine single-load requirement.
+
+**This is the same failure class as the 2026-08-11 launch-path kill bug** (see Roadmap.md, "New
+from 2026-08-11") - that fix protected co-located *healthy* instances from reclaim; this is the
+same reclaim mechanism hitting a still-*loading* instance instead. Planned fix: add a grace period
+to `_instance_watchdog_tick()` - skip relaunch if the intent record's `recorded_at` is younger than
+a reasonable load-time window (e.g. 3 minutes) before treating a missing port as a real failure.
+
+**Next step:** implement the watchdog grace-period fix in `agent/agent.py`, then retry the
+gemma+nomic-embed co-hosting test on Lone Starr.
+
 ## 2026-08-19 - DS1 fully removed from the cluster (never coming back)
 
 Dominic: DS1 (`10.2.35.20`, "Z8 Workstation / Death Star") is returned to HP and will never be plugged
