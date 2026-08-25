@@ -8,7 +8,7 @@
 - **GitLab:** [tamfassoc_gitlab/ai/AI-Distributed-Inference-Cluster](https://gitlab.com/tamfassoc_gitlab/ai/AI-Distributed-Inference-Cluster) (private) - *⚠️ corrected 2026-07-29: the aivm clone has NO GitLab push remote (GitHub-only), like every fleet repo. Dual-remote directive reconciliation flagged to Andrew.*
 - **Branches:** `main` stable, `dev` active (currently equal)
 - **Docs synced to:** `repo/docs/`
-- **Roadmap:** `repo/ROADMAP.md` (mirrors `Roadmap.md` in this folder)
+- **Roadmap:** `repo/docs/Roadmap.md` (mirrors `Roadmap.md` in the vault folder)
 - **Scope:** dashboard + control agent + vLLM workers + LiteLLM router - the control plane for the multi-node GPU cluster
 
 ## Purpose
