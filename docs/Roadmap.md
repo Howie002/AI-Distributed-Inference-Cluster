@@ -481,7 +481,7 @@ A single 50 GB model download can saturate network and disk on a smaller node. A
 Currently the dashboard is open to anyone on the network. Add optional basic-auth or token-based login, configurable in `node_config.json`.
 
 **API key management**
-Issue per-application keys through LiteLLM. Track usage per key so you know which app is generating load.
+Issue per-application keys through LiteLLM. Track usage per key so you know which app is generating load. **First real driver (2026-08-24):** Data Strategy's need for a scoped key to call inference from the Cortex/semantic-layer work - tracked on [[Foundation Snowflake AI/Roadmap]], not here, since it's the same initiative as that project's existing "data integration/endpoint has no home" gap.
 
 **Per-app usage quotas**
 Rate-limit or cap token usage per API key - useful when multiple teams share the cluster.
