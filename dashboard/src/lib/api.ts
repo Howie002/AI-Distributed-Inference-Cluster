@@ -5,13 +5,39 @@ import type {
   UpdateStatus, UpdateConfig, DynamicLog, DiagnoseResult, ProxyDiscovery,
 } from "./types";
 
-// Build a direct URL to a node's agent (browser calls this cross-origin)
+/**
+ * The dashboard's own origin, when it is served under a path prefix.
+ *
+ * Feedback #242: the app now serves under basePath /InferenceCluster so it can
+ * sit behind the Foundation dashboard's proxy. Next rewrites <Link> and asset
+ * URLs for a basePath but NOT plain fetch() calls, so every same-origin fetch
+ * in this file has to prefix it explicitly or it 404s in production while
+ * working perfectly in dev.
+ */
+const BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
+/** A same-origin API URL, basePath included. */
+export function apiUrl(path: string): string {
+  return `${BASE}${path}`;
+}
+
+/**
+ * Every node's agent is reached through this dashboard's own origin.
+ *
+ * Feedback #242 (Andrew: "have the actual vllm dashboard appear ... as if its
+ * from the vm"). This used to return `http://<node ip>:5000` for remote nodes —
+ * a direct browser call over the AI VLAN, which is the single reason this
+ * dashboard could not be served over HTTPS: the page mixed-content-blocks
+ * plain-HTTP calls, and a browser off the VLAN cannot route to those IPs at all.
+ *
+ * Routing through /api/agent/<ip> means the browser only ever talks to this
+ * origin, and the server (which IS on the VLAN) does the fan-out. Every agent
+ * call in this file funnels through here, so this one change moves all ~48 of
+ * them. The route also allow-lists the IP against node_config.json and refuses
+ * launches on agents that predate the VRAM-reclaim fix.
+ */
 function agentBase(node: NodeConfig): string {
-  if (node.ip === "localhost" || node.ip === "127.0.0.1") {
-    // Route through Next.js proxy to avoid mixed-content issues in dev
-    return "/api/agent";
-  }
-  return `http://${node.ip}:${node.agent_port}`;
+  return apiUrl(`/api/agent/${node.ip}`);
 }
 
 // Default timeouts in ms. Polling fans out to every configured node every few
@@ -121,7 +147,7 @@ export function createNodeApi(node: NodeConfig) {
 // Fetch the node list from the server-side config
 export async function fetchNodes(): Promise<NodeConfig[]> {
   try {
-    const res = await fetch("/api/nodes", {
+    const res = await fetch(apiUrl("/api/nodes"), {
       cache: "no-store",
       signal: AbortSignal.timeout(8000),
     });
@@ -155,7 +181,7 @@ export function findMasterNode(nodes: NodeConfig[], nodeStatuses: ClusterNodeSta
 // Rename a registered node. Routes through Next.js so the canonical nodes[] on
 // master gets updated regardless of which dashboard the user is browsing.
 export async function renameNode(ip: string, agent_port: number, name: string): Promise<void> {
-  const res = await fetch("/api/nodes/rename", {
+  const res = await fetch(apiUrl("/api/nodes/rename"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ip, agent_port, name }),
@@ -175,7 +201,7 @@ export async function editNode(args: {
   new_ip: string;
   new_agent_port: number;
 }): Promise<void> {
-  const res = await fetch("/api/nodes/edit", {
+  const res = await fetch(apiUrl("/api/nodes/edit"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(args),
@@ -191,7 +217,7 @@ export async function editNode(args: {
 // node_config.json. Does not contact the removed node itself; if it is still
 // alive, callers should bring it down separately.
 export async function removeNode(ip: string, agent_port: number): Promise<void> {
-  const res = await fetch("/api/nodes/remove", {
+  const res = await fetch(apiUrl("/api/nodes/remove"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ip, agent_port }),

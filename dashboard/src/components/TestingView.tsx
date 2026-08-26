@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback } from "react";
 import type { ClusterNodeStatus } from "@/lib/types";
 import { TEST_PLOTS } from "@/lib/test-plots";
+import { apiUrl } from "@/lib/api";
 
 interface Props {
   nodeStatuses: ClusterNodeStatus[];
@@ -203,7 +204,7 @@ export function TestingView({ nodeStatuses }: Props) {
     let wallMs = 0;
 
     try {
-      const res = await fetch("/api/test", {
+      const res = await fetch(apiUrl("/api/test"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ proxyUrl, models: effectiveModels, prompts, maxTokens, temperature }),

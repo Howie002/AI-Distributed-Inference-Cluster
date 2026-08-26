@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { NodeConfig } from "@/lib/types";
-import { editNode, removeNode } from "@/lib/api";
+import { editNode, removeNode, apiUrl } from "@/lib/api";
 
 interface Props {
   node: NodeConfig;
@@ -48,10 +48,13 @@ export function EditNodeModal({ node, onClose, onSaved }: Props) {
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await fetch(`http://${ip.trim()}:${agentPort}/health`, {
-        signal: AbortSignal.timeout(4000),
-      });
-      setTestResult(res.ok ? "ok" : "fail");
+      // Feedback #242: same-origin probe route — see AddNodeModal.
+      const res = await fetch(
+        apiUrl(`/api/probe?ip=${encodeURIComponent(ip.trim())}&port=${agentPort}`),
+        { signal: AbortSignal.timeout(8000) }
+      );
+      const body = await res.json().catch(() => ({ reachable: false }));
+      setTestResult(res.ok && body.reachable ? "ok" : "fail");
     } catch {
       setTestResult("fail");
     } finally {

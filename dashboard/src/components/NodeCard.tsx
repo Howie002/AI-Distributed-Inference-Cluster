@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { FullStatus, NodeConfig } from "@/lib/types";
-import { createNodeApi, renameNode } from "@/lib/api";
+import { createNodeApi, renameNode, apiUrl } from "@/lib/api";
 import { StackConfigs } from "./StackConfigs";
 import { EditNodeModal } from "./EditNodeModal";
 import { DiagnoseModal } from "./DiagnoseModal";
@@ -93,7 +93,7 @@ export function NodeCard({ node, status, error, onRefresh, onNodesChanged }: Pro
       await new Promise(r => setTimeout(r, 3000));
       try {
         if (onSelf) {
-          const r = await fetch("/api/nodes", {
+          const r = await fetch(apiUrl("/api/nodes"), {
             cache: "no-store",
             signal: AbortSignal.timeout(2000),
           });

@@ -1,5 +1,66 @@
 # AI Distributed Inference Cluster - Notes
 
+## 2026-08-26 - The dashboard can be served over HTTPS: agent calls move same-origin (#242)
+
+Andrew, on the Foundation dashboard's Inference cluster page: *"Do a second tab of this and have
+the actual vllm dashboard appear instead as if its from the vm. Should be possible now."* Earlier,
+#212: *"Can we leverage the actual vllm screen on this page instead so that I can action the model
+loading from here?"*
+
+**The one thing that blocked it, for months.** `agentBase()` in `dashboard/src/lib/api.ts` returned
+`http://<node ip>:5000` for every remote node, so the browser called each agent directly over the AI
+VLAN. An HTTPS page mixed-content-blocks that, and a browser off the VLAN cannot route to those IPs
+at all. That is why the `/InferenceCluster` tile 404ed, and why the Foundation dashboard had to
+reimplement a read-only view server-side (`foundation-ai-dashboard/src/lib/cluster.ts`) rather than
+just linking here. The old `/api/agent/:path*` rewrite in `next.config.mjs` was not a way out: it
+pointed at a single `AGENT_URL`, so it could only ever reach the MASTER agent.
+
+**Why the fix is small.** All ~48 agent calls in the dashboard funnel through that one
+`agentBase()`. Pointing it at `/api/agent/<ip>` moved every one of them at once, with no component
+changes. The new route handler (`dashboard/src/app/api/agent/[ip]/[...path]/route.ts`) does the
+fan-out server-side, where the VLAN is reachable.
+
+**Three things guard it, because this route can start and stop production inference.**
+
+1. **SSRF allow-list.** The target IP must be in `node_config.json`. Without it,
+   `/api/agent/<anything>/...` would proxy arbitrary hosts from a box that sits on both the
+   corporate and the AI VLAN. A non-roster IP gets 403.
+2. **Launch guard** (`dashboard/src/lib/launchGuard.ts`). `POST /instances/launch` is refused on any
+   node whose agent cannot be PROVEN to carry the VRAM-reclaim fix. On older agents
+   `_reclaim_vram_before_launch` SIGKILLs the resident model's EngineCore, so a launch on a shared
+   GPU is an outage. **As of today that blocks Nano 1 (`10.2.35.30`): still `5716ba1`, 40 commits
+   behind, dirty — the very commit that introduced the reclaim path — while it serves live gemma on
+   its only GPU.** Death Star 2 and DGX Spark 1 pass.
+3. **No auth of its own, on purpose.** This dashboard has none and now sits behind the Foundation
+   dashboard's proxy route (`/InferenceCluster`, `enforce`, `tool_id inference-cluster`), which
+   gates at the edge. **Do not expose :3005 directly.**
+
+**How the guard decides, and why it is not a version string.** The agent exposes no version or
+capability flag, and adding one would need new agent code on the very nodes being protected —
+including the Nano, which has no working remote update path. What every agent does report at
+`/update/status` is `local_sha`, `branch`, `remote_sha` and `behind`. The provable claim: the node
+contains everything up to `remote_sha~behind`. If a fix commit is an ancestor of that point, the node
+has it; anything unprovable is treated as unsafe. `GET /api/launch-guard` returns the verdict per
+node so the UI can say so before anyone clicks, rather than surfacing a 409 that reads as a broken
+button.
+
+⚠️ **Resolve against `remote_sha`, never a local branch.** Found while building this: local `dev`
+(`9963401`) has DIVERGED from `origin/dev` (`7082f9a`), so a local-branch check reported Death Star 2
+as unfixed when it is fine. This is the split-brain from the 08-11 runbook, and it now bites tooling,
+not just deploys.
+
+**Also changed, and easy to miss:** the app now serves under `basePath /InferenceCluster`. Next
+rewrites `<Link>` and asset URLs for that automatically but **not** plain `fetch()`, so
+`src/lib/api.ts` gained an `apiUrl()` helper and all seven same-origin fetches go through it. Two
+node-admin flows (Add Node, Edit Node) tested an agent with a direct `http://` fetch to an IP not yet
+in the roster; they now use `/api/probe`, which is deliberately narrow — `/health` only, AI VLAN /24
+only, reachability only — because an unrestricted server-side fetch here would be a useful SSRF
+primitive.
+
+Verified in a real browser through the Foundation dashboard: the embedded dashboard reports 3/3 nodes
+online, 6 GPUs, live per-GPU VRAM and temperatures and per-process breakdowns, which only works if
+the agent calls are landing through the proxy.
+
 ## 2026-08-21 - IndexTTS 2.5 captured as an unverified TTS evaluation candidate
 
 Processed from the Personal Vault Quick Note `Index tts 2.5 - add to tech stack and make a note to add to foundation tts work.md`.

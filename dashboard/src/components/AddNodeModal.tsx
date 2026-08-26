@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { apiUrl } from "@/lib/api";
 
 interface Props {
   masterIp: string;
@@ -39,10 +40,15 @@ export function AddNodeModal({ masterIp, onClose, onAdded }: Props) {
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await fetch(`http://${ip}:${agentPort}/health`, {
-        signal: AbortSignal.timeout(4000),
-      });
-      setTestResult(res.ok ? "ok" : "fail");
+      // Feedback #242: via the same-origin probe route, not a direct call —
+      // a direct http:// fetch mixed-content-blocks once this dashboard is
+      // served over HTTPS behind the Foundation dashboard's proxy.
+      const res = await fetch(
+        apiUrl(`/api/probe?ip=${encodeURIComponent(ip.trim())}&port=${agentPort}`),
+        { signal: AbortSignal.timeout(8000) }
+      );
+      const body = await res.json().catch(() => ({ reachable: false }));
+      setTestResult(res.ok && body.reachable ? "ok" : "fail");
     } catch {
       setTestResult("fail");
     } finally {
@@ -56,7 +62,7 @@ export function AddNodeModal({ masterIp, onClose, onAdded }: Props) {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch("/api/nodes/add", {
+      const res = await fetch(apiUrl("/api/nodes/add"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.trim(), ip: ip.trim(), agent_port: agentPort }),
