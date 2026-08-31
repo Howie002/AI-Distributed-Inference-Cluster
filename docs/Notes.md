@@ -250,7 +250,7 @@ namespaced under `/__failover/` and never forwarded upstream: `status`, plus `di
 (`manual DISABLE DS2 -> active now DS1`, then back).
 
 **Consumers repointed to the proxy** and confirmed by reading each running process, not the file:
-HyperFrames (:3013), SOP Builder (:3012), Foundation Coach frontend (:3001) and backend (:7860) all
+Foundation Content Studio (:3013), SOP Builder (:3012), Foundation Coach frontend (:3001) and backend (:7860) all
 restarted at 16:16 carrying `VOICEBOX_BASE_URL=http://10.2.35.10:17600`.
 
 **Boot persistence:** aivm has no passwordless sudo, so this is a user crontab (`@reboot` plus a
@@ -274,7 +274,7 @@ same way. Triton needs a C compiler present inside the Voicebox container to JIT
 DS2's image does not have one. `/health` returns 200 throughout, so **no health check catches
 this** - the proxy will happily keep routing to a node that fails every job.
 
-Consequence: **fleet TTS is down right now** - HyperFrames narration, Coach voice, SOP narration.
+Consequence: **fleet TTS is down right now** - Foundation Content Studio narration, Coach voice, SOP narration.
 The profile data survived the migration (all 10 present, including the shared George default
 `501cf0ee`), so this is the container's build environment, not the irreplaceable `voicebox-data`
 volume. Not chased further today at Dominic's direction.
@@ -367,7 +367,7 @@ Andrew focused on the critical VM/cluster work while Dominic was gone, then shif
 - Security candidates named in the discussion: Salesforce REST API, OAuth, and a Salesforce Named Credential; Cody is expected to create the Named Credential.
 - Network/hosting question remains open: expose a public-facing route to the AI VM with Cody/Steve, or use an Azure/web-proxy route such as `APIAI.txamfoundation.com`. No route, credential, or firewall change is claimed complete.
 
-**Still open and not claimed complete:** cluster registration, DS2 GPU-spec confirmation, model launch/load-balancing verification, Voicebox volume migration, Foundation Coach/HyperFrames endpoint decision, and confirmation that DS2 is distinct from the earlier HP Z Workstation pilot. Andrew's reflection says he “focused on the Deathstar transfer,” which supports preparation/progress, not completion of those technical gates.
+**Still open and not claimed complete:** cluster registration, DS2 GPU-spec confirmation, model launch/load-balancing verification, Voicebox volume migration, Foundation Coach/Foundation Content Studio endpoint decision, and confirmation that DS2 is distinct from the earlier HP Z Workstation pilot. Andrew's reflection says he “focused on the Deathstar transfer,” which supports preparation/progress, not completion of those technical gates.
 
 ## 2026-07-31 (later) - Death Star 2 registered with the cluster; onboarding was further along than the 07-30 note knew
 
@@ -413,7 +413,7 @@ Project moved from Active Priority to Maintain as part of a broader portfolio re
 - **Yesterday's durability flag: PASSED for normal operation.** Voicebox came up healthy this morning (~18h after the fixes) with both Qwen models loaded and profiles intact — the container fixes survived. The bake-into-image ask stands only for the full-rebuild/reboot case (unchanged from yesterday's wording).
 - **Two models added from the aivm via the API** (disk fine post-cleanup): `chatterbox-turbo` (3.8 GB — zero-shot cloning engine, now the workhorse: ~3× faster than base qwen per generation, ~1.5–2s/sentence; rejects reference clips ≤5s) and `whisper-turbo` (STT for the capture API — powers the dashboard clone card's mic auto-transcription). Note: non-Qwen engines lazy-load on first generation; `/models/load` is Qwen-only.
 - **GPU concurrency profiled** (chatterbox_turbo, same sentence, through the Coach service path): solo ≈ 2.0s; 2 concurrent ≈ 2.7–3.1s each (GPU overlaps two well); 3 concurrent ≈ 6.1–6.4s each, all finishing together (time-slicing, not FIFO — unlike the async `/generate` queue for qwen, which is serial FIFO). `/generate/stream` returns the complete WAV at generation end, not progressively.
-- **Consumers now: HyperFrames narration + Foundation Coach live voice + dashboard panel tests** — all sharing the one GPU. Contention is real (an HF render's TTS phase slows a live Coach session); if simultaneous demand grows, the options are a second GPU worker or the 0.6B Chatterbox model.
+- **Consumers now: Foundation Content Studio narration + Foundation Coach live voice + dashboard panel tests** — all sharing the one GPU. Contention is real (an HF render's TTS phase slows a live Coach session); if simultaneous demand grows, the options are a second GPU worker or the 0.6B Chatterbox model.
 - **API quirks catalogued today** (also in the dashboard/HF notes): `GET /profiles/{id}` always reports `sample_count: 0` (LIST + `/samples` are truthful); a `/generate` request that omits `engine` does NOT fall back to the profile's default engine — the API default (base qwen) silently wins, so every consumer must pass engine explicitly.
 
 ## 2026-07-15 — Voicebox Qwen TTS unblocked (disk, torchaudio, Triton) and live
@@ -422,19 +422,19 @@ Voicebox (Death Star `10.2.35.20:17600`) went from "loads nothing usable" to ser
 
 1. **Disk full.** `GET /health/filesystem` reported ~36 MB free of 952 GB (`healthy:false`); nothing could download. Andrew freed it to ~292 GB.
 2. **torch/torchaudio CUDA mismatch.** Qwen model downloads errored: "PyTorch has CUDA version 13.0 whereas TorchAudio has CUDA version 12.8." Qwen imports torchaudio; Kokoro does not (why Kokoro alone had worked). Fixed so both Qwen models now download + load (`qwen-tts-1.7B`, `qwen-custom-voice-1.7B`).
-3. **Triton "Failed to find C compiler."** After the models loaded, generation still failed: Qwen JIT-compiles Triton kernels on first inference and the container had no `gcc`. Reproduced via both HyperFrames `tts.py` and a direct `/generate`. Andrew installed a compiler in the container; Qwen generation now returns audio.
+3. **Triton "Failed to find C compiler."** After the models loaded, generation still failed: Qwen JIT-compiles Triton kernels on first inference and the container had no `gcc`. Reproduced via both Foundation Content Studio `tts.py` and a direct `/generate`. Andrew installed a compiler in the container; Qwen generation now returns audio.
 
 Cleanup done from the aivm side via the Voicebox API: dismissed the two errored Qwen download tasks (`/models/download/cancel`) so `/tasks/active` was clean before the retries.
 
-**Live now (HTTP-verified):** `qwen-tts-1.7B` + `qwen-custom-voice-1.7B` both loaded; a real HyperFrames narration preview produced valid 24 kHz audio through the deployed proxy. Voice model in use for narration is `qwen_custom_voice` (Ryan preset). Managed from the new dashboard `/admin/voicebox` panel; consumed by HyperFrames narration (see [[../HyperFrames Education Generator/Notes]] 07-15, [[project_hyperframes_voicebox_narration]]).
+**Live now (HTTP-verified):** `qwen-tts-1.7B` + `qwen-custom-voice-1.7B` both loaded; a real Foundation Content Studio narration preview produced valid 24 kHz audio through the deployed proxy. Voice model in use for narration is `qwen_custom_voice` (Ryan preset). Managed from the new dashboard `/admin/voicebox` panel; consumed by Foundation Content Studio narration (see [[../Foundation Content Studio/Notes]] 07-15, [[project_foundation_content_studio_voicebox_narration]]).
 
 **DURABILITY FLAG (Cody / Andrew):** if the three container fixes (disk cleanup aside) - the torchaudio-matching-torch install and the `gcc`/`build-essential` install - were applied to the running container rather than baked into the `~/voicebox` Dockerfile (its `cuda` build branch), a container rebuild or restart could regress them and silently break Qwen TTS. Confirm they persist across a Voicebox restart; fold `build-essential` + a cu130-matching torchaudio into the image if not.
 
 ## 2026-07-14 — VM confirmed reachable to Voicebox; management-interface idea; dev branch reconciled
 
-**Voicebox reachability confirmed:** Dominic verified the VM (10.2.35.10) can reach the Death Star's Voicebox endpoint (`10.2.35.20:17600/health` → healthy, RTX PRO 6000 Blackwell GPU visible, no model loaded yet). Voice testing planned for tomorrow (2026-07-15), then integration into HyperFrames.
+**Voicebox reachability confirmed:** Dominic verified the VM (10.2.35.10) can reach the Death Star's Voicebox endpoint (`10.2.35.20:17600/health` → healthy, RTX PRO 6000 Blackwell GPU visible, no model loaded yet). Voice testing planned for tomorrow (2026-07-15), then integration into Foundation Content Studio.
 
-**New idea (Andrew):** the Foundation's current text-to-speech consumers are Foundation Coach and HyperFrames. Rather than requiring Death Star SSH access every time a voice/profile needs customizing, build a lightweight management interface on the VM that proxies to the Voicebox endpoint - giving both consuming apps (and future ones) a way to configure voices/profiles without touching the Death Star directly. Not started; captured as a real idea worth roadmapping.
+**New idea (Andrew):** the Foundation's current text-to-speech consumers are Foundation Coach and Foundation Content Studio. Rather than requiring Death Star SSH access every time a voice/profile needs customizing, build a lightweight management interface on the VM that proxies to the Voicebox endpoint - giving both consuming apps (and future ones) a way to configure voices/profiles without touching the Death Star directly. Not started; captured as a real idea worth roadmapping.
 
 **`dev` branch reconciled:** config snapshot committed+pushed to `main` (`cbffaf3`; Death Star `:8021` gemma confirmed out of pool/connection-refused, `:8023` + `10.2.35.30:8020` still serving); local `dev` fast-forwarded 18 commits to `origin/dev`. Closes the long-carried "GitHub ahead of local" Master To Do item.
 
@@ -678,15 +678,15 @@ Foundation Coach: zero changes — calls the proxy, not the node directly.
 
 ## 2026-06-24 (late) — Turning away from `gemma-4-31b`; node rename to Death Star
 
-**Decision: `gemma-4-31b` is not a production model on this cluster.** After today's repeated silent-exit failures during APIServer init (post the zombie sweep that freed ~40 GB of leaked RAM), we're stepping away from it as the default. **`gemma-4-26b-a4b-nvfp4`** is the canonical chat/completions model going forward — it's instruction-tuned, runs reliably on GPU Server 1, supports `/v1/chat/completions` natively, and produces equivalent-or-better structured output for the HyperFrames pipeline at lower latency.
+**Decision: `gemma-4-31b` is not a production model on this cluster.** After today's repeated silent-exit failures during APIServer init (post the zombie sweep that freed ~40 GB of leaked RAM), we're stepping away from it as the default. **`gemma-4-26b-a4b-nvfp4`** is the canonical chat/completions model going forward — it's instruction-tuned, runs reliably on GPU Server 1, supports `/v1/chat/completions` natively, and produces equivalent-or-better structured output for the Foundation Content Studio pipeline at lower latency.
 
 **Why retire 31b:**
 - Operationally fragile: required `--enforce-eager` (Blackwell SM 12.x CUDA gap), occasionally dropped off the cluster mid-session, took 2+ minutes to load 58 GB BF16 weights, and after today's zombie cleanup wouldn't relaunch at all (silent exit before EngineCore spawn, no traceback).
 - Base model — needed an explicit chat template Jinja just to be usable from `/v1/chat/completions`, and the responses are still less polished than the instruction-tuned 26B.
-- HyperFrames pipeline used 31b via `/v1/completions` with Gemma turn markers, but the 26B understands the same turn markers AND is chat-native. Net win: simpler, more reliable, faster.
+- Foundation Content Studio pipeline used 31b via `/v1/completions` with Gemma turn markers, but the 26B understands the same turn markers AND is chat-native. Net win: simpler, more reliable, faster.
 
 **What this changes:**
-- `HyperFrames Education Generator/pipeline/llm.py` and `start.sh` now default to `gemma-4-26b-a4b-nvfp4` (was `gemma-4-31b`). Override via `PIPELINE_LLM_MODEL` env var if you need to test something else.
+- `foundation-content-studio/pipeline/llm.py` and `start.sh` now default to `gemma-4-26b-a4b-nvfp4` (was `gemma-4-31b`). Override via `PIPELINE_LLM_MODEL` env var if you need to test something else.
 - Cluster recommendation: point dashboard testing tab + consumer code at the 26B by default.
 - `chat_template` flag support in the agent stays useful for future base models (any non-instruction-tuned model coming in via the model library), but is not in active use right now.
 
