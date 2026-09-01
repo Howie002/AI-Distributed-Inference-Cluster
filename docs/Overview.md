@@ -5,7 +5,7 @@
 
 ## Repository
 - **GitHub:** [Howie002/AI-Distributed-Inference-Cluster](https://github.com/Howie002/AI-Distributed-Inference-Cluster) (private)
-- **GitLab:** [tamfassoc_gitlab/ai/AI-Distributed-Inference-Cluster](https://gitlab.com/tamfassoc_gitlab/ai/AI-Distributed-Inference-Cluster) (private) - *⚠️ corrected 2026-07-29: the aivm clone has NO GitLab push remote (GitHub-only), like every fleet repo. Dual-remote directive reconciliation flagged to Andrew.*
+- **GitLab:** [tamfassoc_gitlab/ai/AI-Distributed-Inference-Cluster](https://gitlab.com/tamfassoc_gitlab/ai/AI-Distributed-Inference-Cluster) (private) - *push-mirrored 2026-09-01: this clone's `gitlab` remote is live and verified (local HEAD matches GitLab HEAD on the current branch). Andrew's dual-remote directive is resolved fleet-wide as of today.*
 - **Branches:** `main` stable, `dev` active (currently equal)
 - **Docs synced to:** `repo/docs/`
 - **Roadmap:** `repo/docs/Roadmap.md` (mirrors `Roadmap.md` in the vault folder)
