@@ -11,6 +11,11 @@ Living document. Software feature work in "In Progress" and phased sections belo
 
 ---
 
+## Standing: Help Center manual
+
+- [ ] Write the manual (`content/wiki/inference-cluster/`) and add the Help button, during the next session with substantial work here.
+- Reminder: when this tool's user-facing behavior changes, update its manual in the same session (pages, screenshots, `updated` date). See Notes, 2026-09-24.
+
 ## New from 2026-08-21 - IndexTTS 2.5 candidate evaluation
 
 - [ ] **Evaluate IndexTTS 2.5 without changing production Voicebox.** Source: https://huggingface.co/IndexTeam/IndexTTS-2.5. Treat it as an unverified candidate, not an adopted stack component.

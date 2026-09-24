@@ -1,5 +1,17 @@
 # AI Distributed Inference Cluster - Notes
 
+## 2026-09-24 - Help Center manual: standing requirement
+
+This tool's training manual belongs in the dashboard Help Center (`ai.txamfoundation.com/help`), tool id `inference-cluster`. None is written yet; it will live at `foundation-ai-dashboard/content/wiki/inference-cluster/`.
+
+Standing rule from Andrew (2026-09-24), for every session on this project:
+
+- Any change to what a user sees or does (screens, buttons, tabs, workflows, settings, defaults, permissions) updates the manual in the same session: the affected pages, re-captured screenshots (`node scripts/wiki-capture.mjs inference-cluster` in the dashboard repo), and `updated` in `manual.json`. Back-end-only changes need no manual edit.
+- The first session that does substantial work on this tool writes the manual and adds the Help button next to the Feedback button, unless Andrew says to skip it.
+- Screenshots blur or cover donor, prospect, and personal data; look at every image before publishing.
+
+Full rules: `2. Agents/Agent Instructions.md` ("Help Center manuals"). Authoring guide: `foundation-ai-dashboard/docs/Help-Center.md`.
+
 ## 2026-08-26 - The dashboard can be served over HTTPS: agent calls move same-origin (#242)
 
 Andrew, on the Foundation dashboard's Inference cluster page: *"Do a second tab of this and have
