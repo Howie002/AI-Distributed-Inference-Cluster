@@ -144,3 +144,15 @@ RTX Pro 6000 Blackwell cards provide substantially more GPU memory than the DGX 
 > **Created:** 2026-03-05
 > **Last Updated:** 2026-07-17
 
+<!-- pm-dashboard:team:start -->
+## Project team (PM Dashboard)
+
+The people authorized to change this project and its notes.
+
+*Maintained by the PM Dashboard. Change it there; edits inside this section are overwritten. Last written 2026-09-29 by ahowerton@txamfoundation.com.*
+
+| Name | Role | Email |
+|---|---|---|
+| Andrew Howerton | Project lead | ahowerton@txamfoundation.com |
+| Dominic Ferrara | Developer | dferrara@txamfoundation.com |
+<!-- pm-dashboard:team:end -->
