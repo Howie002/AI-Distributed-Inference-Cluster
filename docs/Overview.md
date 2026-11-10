@@ -156,3 +156,10 @@ The people authorized to change this project and its notes.
 | Andrew Howerton | Project lead | ahowerton@txamfoundation.com |
 | Dominic Ferrara | Developer | dferrara@txamfoundation.com |
 <!-- pm-dashboard:team:end -->
+
+## Report
+
+- **Report Category:** infrastructure
+- **Report Audience:** department
+- **Report Blurb:** In-house, multi-node GPU hardware plus the router/control software running Foundation’s own AI models.
+- **Why it matters:** Runs every other tool on this page without per-query API costs or donor data ever leaving Foundation hardware.
